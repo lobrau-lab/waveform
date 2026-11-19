@@ -60,7 +60,8 @@ const DEFAULT_VISUAL_PARAMS: VisualParams = {
   bgOpacity: 0.25,
   customJsCode: DEFAULT_JS_SCRIPT,
   retroHtmlSkin: DEFAULT_MYSPACE_HTML,
-  enabledLayers: []
+  enabledLayers: [],
+  layerOpacity: 0.45
 };
 
 const DEFAULT_VST_SETTINGS: VstSettings = {
@@ -95,6 +96,7 @@ const DEFAULT_METADATA: AudioMetadata = {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<"dashboard" | "designer" | "metadata" | "renderer">("dashboard");
+  const [presetCategory, setPresetCategory] = useState<"all" | "horror" | "retro" | "kinetic">("all");
   const [skinId, setSkinId] = useState<string>("studio-charcoal");
   const [skin, setSkin] = useState<LayoutSkin>(PRESET_SKINS[0]);
   
@@ -1865,46 +1867,166 @@ export default function App() {
                   className="space-y-4"
                 >
                   <div className="bg-[#101116] border border-[#1f2937] rounded-lg p-5">
-                    <h3 className="font-bold flex items-center gap-2 text-sm text-yellow-500 font-mono tracking-widest uppercase mb-4 border-b border-gray-800 pb-3">
-                      <Tv size={18} /> Procedural Motion Presets
-                    </h3>
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4 border-b border-gray-800 pb-3">
+                      <h3 className="font-bold flex items-center gap-2 text-sm text-yellow-500 font-mono tracking-widest uppercase">
+                        <Tv size={18} /> Procedural Motion Presets
+                      </h3>
 
-                    <div className="grid grid-cols-2 gap-3 mb-5">
+                      {/* Category Filter Segmented Control */}
+                      <div className="flex flex-wrap items-center gap-1 bg-black/50 p-1 rounded-md border border-gray-800">
+                        {[
+                          { id: "all" as const, label: "All" },
+                          { id: "horror" as const, label: "Horror & Liminal" },
+                          { id: "retro" as const, label: "Retro & CRT" },
+                          { id: "kinetic" as const, label: "Kinetic" }
+                        ].map((cat) => (
+                          <button
+                            key={cat.id}
+                            type="button"
+                            onClick={() => setPresetCategory(cat.id)}
+                            className={`px-2.5 py-1 text-[10px] font-mono rounded transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                              presetCategory === cat.id
+                                ? "bg-yellow-500 text-black font-bold"
+                                : "text-gray-400 hover:text-gray-200"
+                            }`}
+                          >
+                            {cat.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
                       {[
-                        { id: VisualPreset.WAVEFORM_NEON, desc: "Glowing neon waveforms matching audio waveforms." },
-                        { id: VisualPreset.SPECTRUM_BARS, desc: "Sleek 3D equalizer visualizer with high resolution bands." },
-                        { id: VisualPreset.COSMIC_TUNNEL, desc: "Star lanes and rings moving at speed." },
-                        { id: VisualPreset.GEOCITIES_STARS, desc: "Bouncing Geocities sparkles reacting to transients." },
-                        { id: VisualPreset.ORBITAL_VORTEX, desc: "Orbital particles spiraling at base speeds." },
-                        { id: VisualPreset.MYSPACE_DISCO, desc: "Pulsing grids and revolving records." },
-                        { id: VisualPreset.FRACTAL_MANDALA, desc: "Pulsing centered geometric sacred mandala rotating to frequencies." },
-                        { id: VisualPreset.CYBER_GRID_MATRIX, desc: "Glowing perspective synthwave grid with binary code streams." },
-                        { id: VisualPreset.FLUID_LIQUID_SWARM, desc: "150+ particle swarm swirling on dynamic force fields." },
-                        { id: VisualPreset.PLAYSTATION_SOUNDSCOPE, desc: "Nostalgic 3D polyhedral vector wireframes, shifting starfields, and authentic 90s CD player SoundScope HUD." },
-                        { id: VisualPreset.SUPER_SCIENCE_80S, desc: "Classic laboratory CRT screen with atoms, orbital molecules, laser charts, and high-tech vector telemetry." },
-                        { id: VisualPreset.CUSTOM_JS, desc: "Complete Javascript script editor module below!" }
-                      ].map((preset) => (
-                        <button
-                          key={preset.id}
-                          onClick={() => handleVisualParamsChange({ ...visualParams, preset: preset.id })}
-                          className={`p-3 rounded-lg border text-left cursor-pointer transition-all ${
-                            visualParams.preset === preset.id
-                              ? "bg-yellow-900/10 border-yellow-500 text-yellow-500 font-semibold"
-                              : "bg-black/45 border-gray-800 text-gray-400 hover:border-gray-700 hover:text-gray-200"
-                          }`}
-                        >
-                          <span className="block text-xs font-mono">{preset.id}</span>
-                          <span className="text-[10px] text-gray-500 mt-1 block leading-relaxed">{preset.desc}</span>
-                        </button>
-                      ))}
+                        {
+                          id: VisualPreset.SECURITY_CAM_87,
+                          cat: ["horror", "retro"],
+                          desc: "1987 night-shift CCTV hallway monitor with checkered tiles, flickering fluorescent lights, VHS static, and a lurking animatronic silhouette.",
+                          palette: { baseColor: "#7dff9b", secondaryColor: "#ffaa2b" }
+                        },
+                        {
+                          id: VisualPreset.ENDOSKELETON_BLUEPRINT,
+                          cat: ["horror", "retro"],
+                          desc: "Clandestine 80s subterranean robotics CAD blueprint with audio-reactive split faceplates opening to expose the endoskeleton and optical servos.",
+                          palette: { baseColor: "#38bdf8", secondaryColor: "#e0f2fe" }
+                        },
+                        {
+                          id: VisualPreset.LIMINAL_ARCADE_HALL,
+                          cat: ["horror"],
+                          desc: "Infinite liminal 80s party corridor with darkened doorways, swaying bunting banners, buzzing ceiling fixtures, and drifting dust haze.",
+                          palette: { baseColor: "#e6c86e", secondaryColor: "#ff5533" }
+                        },
+                        {
+                          id: VisualPreset.SPRINGLOCK_MECHANISM,
+                          cat: ["horror"],
+                          desc: "Claustrophobic animatronic chest cavity with interlocking steel gears, compressing springlock coils, snapping rib-clamps, and electrical arcs.",
+                          palette: { baseColor: "#f97316", secondaryColor: "#38bdf8" }
+                        },
+                        {
+                          id: VisualPreset.VHS_SIGNAL_HAUNT,
+                          cat: ["horror", "retro"],
+                          desc: "Haunted 80s VHS training tape where Rutt-Etra CRT scanlines warp out of snow static to form a hollow-eyed animatronic visage.",
+                          palette: { baseColor: "#e1ebff", secondaryColor: "#ff2a55" }
+                        },
+                        {
+                          id: VisualPreset.SUPER_SCIENCE_80S,
+                          cat: ["horror", "retro"],
+                          desc: "Classic laboratory CRT screen with atoms, orbital molecules, laser charts, and high-tech vector telemetry.",
+                          palette: { baseColor: "#00ff66", secondaryColor: "#00f0ff" }
+                        },
+                        {
+                          id: VisualPreset.PLAYSTATION_SOUNDSCOPE,
+                          cat: ["retro"],
+                          desc: "Nostalgic 3D polyhedral vector wireframes, shifting starfields, and authentic 90s CD player SoundScope HUD."
+                        },
+                        {
+                          id: VisualPreset.CYBER_GRID_MATRIX,
+                          cat: ["retro"],
+                          desc: "Glowing perspective synthwave grid with binary code streams."
+                        },
+                        {
+                          id: VisualPreset.COSMIC_TUNNEL,
+                          cat: ["retro"],
+                          desc: "Star lanes and rings moving at speed."
+                        },
+                        {
+                          id: VisualPreset.GEOCITIES_STARS,
+                          cat: ["retro"],
+                          desc: "Bouncing Geocities sparkles reacting to transients."
+                        },
+                        {
+                          id: VisualPreset.MYSPACE_DISCO,
+                          cat: ["retro"],
+                          desc: "Pulsing grids and revolving records."
+                        },
+                        {
+                          id: VisualPreset.WAVEFORM_NEON,
+                          cat: ["kinetic"],
+                          desc: "Glowing neon waveforms matching audio waveforms."
+                        },
+                        {
+                          id: VisualPreset.SPECTRUM_BARS,
+                          cat: ["kinetic"],
+                          desc: "Sleek 3D equalizer visualizer with high resolution bands."
+                        },
+                        {
+                          id: VisualPreset.ORBITAL_VORTEX,
+                          cat: ["kinetic"],
+                          desc: "Orbital particles spiraling at base speeds."
+                        },
+                        {
+                          id: VisualPreset.FRACTAL_MANDALA,
+                          cat: ["kinetic"],
+                          desc: "Pulsing centered geometric sacred mandala rotating to frequencies."
+                        },
+                        {
+                          id: VisualPreset.FLUID_LIQUID_SWARM,
+                          cat: ["kinetic"],
+                          desc: "150+ particle swarm swirling on dynamic force fields."
+                        },
+                        {
+                          id: VisualPreset.CUSTOM_JS,
+                          cat: ["kinetic"],
+                          desc: "Complete Javascript script editor module below!"
+                        }
+                      ]
+                        .filter((preset) => presetCategory === "all" || preset.cat.includes(presetCategory))
+                        .map((preset) => {
+                          const isSelected = visualParams.preset === preset.id;
+                          return (
+                            <button
+                              key={preset.id}
+                              type="button"
+                              onClick={() =>
+                                handleVisualParamsChange({
+                                  ...visualParams,
+                                  preset: preset.id,
+                                  ...(preset.palette ? preset.palette : {})
+                                })
+                              }
+                              className={`p-3 rounded-lg border text-left cursor-pointer transition-all ${
+                                isSelected
+                                  ? "bg-yellow-900/15 border-yellow-500 text-yellow-400 font-semibold"
+                                  : "bg-black/45 border-gray-800 text-gray-300 hover:border-gray-600 hover:text-gray-100"
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="block text-xs font-mono truncate">{preset.id}</span>
+                                <span className="text-[9px] font-mono text-gray-500 shrink-0">
+                                  {preset.cat.includes("horror") ? "Horror / 80s" : preset.cat.includes("retro") ? "Retro" : "Kinetic"}
+                                </span>
+                              </div>
+                              <span className="text-[10px] text-gray-500 mt-1 block leading-relaxed">{preset.desc}</span>
+                            </button>
+                          );
+                        })}
                     </div>
 
                     {/* FADER CONTROLS */}
-                    <h4 className="text-xs font-mono font-bold text-gray-400 uppercase tracking-widest border-b border-gray-900 pb-1 mb-4">⚙️ Preset Tuning Sliders</h4>
-                    <div className="space-y-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      
+                    <h4 className="text-xs font-mono font-bold text-gray-400 uppercase tracking-widest border-b border-gray-800 pb-1 mb-4">Preset Tuning Sliders</h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div>
-                        <div className="flex justify-between text-[11px] font-mono mb-1 text-gray-300">
+                        <div className="flex justify-between text-[11px] font-mono mb-1 text-gray-300 tabular-nums">
                           <span>Speed Multiplier:</span>
                           <span className="text-yellow-500 font-bold">{visualParams.speed}x</span>
                         </div>
@@ -1920,7 +2042,7 @@ export default function App() {
                       </div>
 
                       <div>
-                        <div className="flex justify-between text-[11px] font-mono mb-1 text-gray-300">
+                        <div className="flex justify-between text-[11px] font-mono mb-1 text-gray-300 tabular-nums">
                           <span>Audio Sensitivity:</span>
                           <span className="text-yellow-500 font-bold">{visualParams.sensitivity}x</span>
                         </div>
@@ -1936,8 +2058,8 @@ export default function App() {
                       </div>
 
                       <div>
-                        <div className="flex justify-between text-[11px] font-mono mb-1 text-gray-300">
-                          <span>Outer Neon Glow Blur:</span>
+                        <div className="flex justify-between text-[11px] font-mono mb-1 text-gray-300 tabular-nums">
+                          <span>Outer Glow / Phosphor Blur:</span>
                           <span className="text-yellow-500 font-bold">{visualParams.glow} px</span>
                         </div>
                         <input
@@ -1952,7 +2074,7 @@ export default function App() {
                       </div>
 
                       <div>
-                        <div className="flex justify-between text-[11px] font-mono mb-1 text-gray-300">
+                        <div className="flex justify-between text-[11px] font-mono mb-1 text-gray-300 tabular-nums">
                           <span>Line Thickness:</span>
                           <span className="text-yellow-500 font-bold">{visualParams.lineWidth} px</span>
                         </div>
@@ -1967,30 +2089,84 @@ export default function App() {
                         />
                       </div>
 
-                      <div className="sm:col-span-2 grid grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-[10px] font-mono text-gray-500 uppercase mb-1">Primary Tone Color</label>
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="color"
-                              className="w-10 h-7 rounded border border-gray-800 bg-transparent cursor-pointer"
-                              value={visualParams.baseColor}
-                              onChange={(e) => handleVisualParamsChange({ ...visualParams, baseColor: e.target.value })}
-                            />
-                            <span className="text-xs font-mono font-semibold text-gray-300">{visualParams.baseColor}</span>
-                          </div>
+                      <div className="sm:col-span-2">
+                        <div className="flex justify-between text-[11px] font-mono mb-1 text-gray-300 tabular-nums">
+                          <span>CRT Frame Persistence / Motion Blur:</span>
+                          <span className="text-yellow-500 font-bold">{Math.round((1 - (visualParams.bgOpacity ?? 0.25)) * 100)}%</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0.08"
+                          max="0.95"
+                          step="0.03"
+                          className="w-full accent-yellow-500 cursor-pointer h-1.5 bg-gray-800 rounded-lg appearance-none"
+                          value={visualParams.bgOpacity ?? 0.25}
+                          onChange={(e) => handleVisualParamsChange({ ...visualParams, bgOpacity: parseFloat(e.target.value) })}
+                        />
+                        <div className="flex justify-between text-[9px] font-mono text-gray-500 mt-1">
+                          <span>Ghostly Analog Trails</span>
+                          <span>Crisp Surveillance Frame</span>
+                        </div>
+                      </div>
+
+                      {/* Curated Atmospheric Mood Palettes */}
+                      <div className="sm:col-span-2 pt-2 border-t border-gray-800/80">
+                        <label className="block text-[10px] font-mono text-gray-400 uppercase mb-2">Quick Atmospheric Palettes</label>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3">
+                          {[
+                            { name: "CCTV Phosphor", base: "#7dff9b", sec: "#ffaa2b" },
+                            { name: "Sister Blueprint", base: "#38bdf8", sec: "#e0f2fe" },
+                            { name: "Backrooms Sodium", base: "#e6c86e", sec: "#ff5533" },
+                            { name: "Fazbear Crimson", base: "#ff2a55", sec: "#ffcc00" },
+                            { name: "Springlock Rust", base: "#f97316", sec: "#38bdf8" },
+                            { name: "Cyber Synth", base: "#ff007f", sec: "#00ffff" }
+                          ].map((pal) => (
+                            <button
+                              key={pal.name}
+                              type="button"
+                              onClick={() =>
+                                handleVisualParamsChange({
+                                  ...visualParams,
+                                  baseColor: pal.base,
+                                  secondaryColor: pal.sec
+                                })
+                              }
+                              className="flex items-center gap-2 px-2.5 py-1.5 rounded border border-gray-800 bg-black/40 hover:border-gray-600 transition-colors cursor-pointer text-left"
+                            >
+                              <span className="flex items-center shrink-0">
+                                <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: pal.base }} />
+                                <span className="w-2.5 h-2.5 rounded-sm -ml-0.5" style={{ backgroundColor: pal.sec }} />
+                              </span>
+                              <span className="text-[10px] font-mono text-gray-300 truncate">{pal.name}</span>
+                            </button>
+                          ))}
                         </div>
 
-                        <div>
-                          <label className="block text-[10px] font-mono text-gray-500 uppercase mb-1">Secondary Accent Tone</label>
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="color"
-                              className="w-10 h-7 rounded border border-gray-800 bg-transparent cursor-pointer"
-                              value={visualParams.secondaryColor}
-                              onChange={(e) => handleVisualParamsChange({ ...visualParams, secondaryColor: e.target.value })}
-                            />
-                            <span className="text-xs font-mono font-semibold text-gray-300">{visualParams.secondaryColor}</span>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-[10px] font-mono text-gray-500 uppercase mb-1">Primary Tone Color</label>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="color"
+                                className="w-10 h-7 rounded border border-gray-800 bg-transparent cursor-pointer"
+                                value={visualParams.baseColor}
+                                onChange={(e) => handleVisualParamsChange({ ...visualParams, baseColor: e.target.value })}
+                              />
+                              <span className="text-xs font-mono font-semibold text-gray-300">{visualParams.baseColor}</span>
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="block text-[10px] font-mono text-gray-500 uppercase mb-1">Secondary Accent Tone</label>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="color"
+                                className="w-10 h-7 rounded border border-gray-800 bg-transparent cursor-pointer"
+                                value={visualParams.secondaryColor}
+                                onChange={(e) => handleVisualParamsChange({ ...visualParams, secondaryColor: e.target.value })}
+                              />
+                              <span className="text-xs font-mono font-semibold text-gray-300">{visualParams.secondaryColor}</span>
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -1998,17 +2174,51 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* ✨ VISUAL MULTI-LAYERING FEATURE ✨ */}
+                  {/* DUAL-LAYER VISUALS COMPOSER */}
                   <div className="bg-[#101116] border border-[#1f2937] rounded-lg p-5">
-                    <h3 className="font-bold flex items-center gap-2 text-sm text-yellow-500 font-mono tracking-widest uppercase mb-3 border-b border-gray-800 pb-2">
-                      ✨ Dual-Layer Visuals Composer
-                    </h3>
-                    <p className="text-[11px] text-gray-400 mb-4 leading-relaxed">
-                      Enable auxiliary visualizers to layer together in the background beneath your primary motif. Blend multiple animations simultaneously to craft highly customizable studio backdrops!
+                    <div className="flex items-center justify-between gap-2 mb-3 border-b border-gray-800 pb-2">
+                      <h3 className="font-bold flex items-center gap-2 text-sm text-yellow-500 font-mono tracking-widest uppercase">
+                        <Layers size={16} /> Dual-Layer Visuals Composer
+                      </h3>
+                      {(visualParams.enabledLayers || []).length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => handleVisualParamsChange({ ...visualParams, enabledLayers: [] })}
+                          className="text-[10px] font-mono text-gray-400 hover:text-yellow-400 transition-colors cursor-pointer"
+                        >
+                          Clear Layers ({(visualParams.enabledLayers || []).length})
+                        </button>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-gray-400 mb-3 leading-relaxed">
+                      Layer auxiliary visualizers beneath your primary motif — for example, combine Analog VHS Signal Haunt with Liminal Party Corridor or Security Cam &apos;87 with 1980&apos;s Super Science.
                     </p>
+
+                    <div className="mb-4">
+                      <div className="flex justify-between text-[11px] font-mono mb-1 text-gray-300 tabular-nums">
+                        <span>Background Layer Blend Opacity:</span>
+                        <span className="text-yellow-500 font-bold">{Math.round((visualParams.layerOpacity ?? 0.45) * 100)}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0.1"
+                        max="0.9"
+                        step="0.05"
+                        className="w-full accent-yellow-500 cursor-pointer h-1.5 bg-gray-800 rounded-lg appearance-none"
+                        value={visualParams.layerOpacity ?? 0.45}
+                        onChange={(e) => handleVisualParamsChange({ ...visualParams, layerOpacity: parseFloat(e.target.value) })}
+                      />
+                    </div>
 
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                       {[
+                        VisualPreset.SECURITY_CAM_87,
+                        VisualPreset.ENDOSKELETON_BLUEPRINT,
+                        VisualPreset.LIMINAL_ARCADE_HALL,
+                        VisualPreset.SPRINGLOCK_MECHANISM,
+                        VisualPreset.VHS_SIGNAL_HAUNT,
+                        VisualPreset.SUPER_SCIENCE_80S,
+                        VisualPreset.PLAYSTATION_SOUNDSCOPE,
                         VisualPreset.WAVEFORM_NEON,
                         VisualPreset.SPECTRUM_BARS,
                         VisualPreset.COSMIC_TUNNEL,
@@ -2017,9 +2227,7 @@ export default function App() {
                         VisualPreset.MYSPACE_DISCO,
                         VisualPreset.FRACTAL_MANDALA,
                         VisualPreset.CYBER_GRID_MATRIX,
-                        VisualPreset.FLUID_LIQUID_SWARM,
-                        VisualPreset.PLAYSTATION_SOUNDSCOPE,
-                        VisualPreset.SUPER_SCIENCE_80S
+                        VisualPreset.FLUID_LIQUID_SWARM
                       ].map((presetId) => {
                         const isPrimary = visualParams.preset === presetId;
                         const isLayerActive = (visualParams.enabledLayers || []).includes(presetId);
@@ -2030,7 +2238,7 @@ export default function App() {
                             disabled={isPrimary}
                             type="button"
                             onClick={() => {
-                              const currentLayers = Math.max(1) && visualParams.enabledLayers || [];
+                              const currentLayers = visualParams.enabledLayers || [];
                               const newLayers = currentLayers.includes(presetId)
                                 ? currentLayers.filter((l) => l !== presetId)
                                 : [...currentLayers, presetId];
@@ -2041,21 +2249,21 @@ export default function App() {
                             }}
                             className={`p-2.5 rounded border text-left transition-all ${
                               isPrimary
-                                ? "opacity-30 cursor-not-allowed bg-black/25 border-gray-950 text-gray-600"
+                                ? "opacity-30 cursor-not-allowed bg-black/25 border-gray-900 text-gray-600"
                                 : isLayerActive
-                                  ? "bg-yellow-950/20 border-yellow-650 text-yellow-500 font-medium scale-[0.98]"
-                                  : "bg-black/30 border-gray-850 text-gray-400 hover:border-gray-800 hover:text-gray-250 cursor-pointer"
+                                  ? "bg-yellow-950/25 border-yellow-600 text-yellow-400 font-medium scale-[0.98]"
+                                  : "bg-black/30 border-gray-800 text-gray-400 hover:border-gray-700 hover:text-gray-200 cursor-pointer"
                             }`}
                           >
-                            <div className="flex items-center justify-between">
-                              <span className="text-[10px] font-mono leading-tight">{presetId}</span>
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="text-[10px] font-mono leading-tight truncate">{presetId}</span>
                               {!isPrimary && (
-                                <span className={`w-3 h-3 rounded-full border border-gray-700 flex items-center justify-center text-[7px] ${isLayerActive ? "bg-yellow-500 border-yellow-500 text-black font-extrabold" : ""}`}>
+                                <span className={`w-3.5 h-3.5 shrink-0 rounded-full border border-gray-700 flex items-center justify-center text-[8px] ${isLayerActive ? "bg-yellow-500 border-yellow-500 text-black font-extrabold" : ""}`}>
                                   {isLayerActive ? "✓" : ""}
                                 </span>
                               )}
                             </div>
-                            <span className="text-[8px] text-gray-500 block mt-1">
+                            <span className="text-[9px] text-gray-500 block mt-1">
                               {isPrimary 
                                 ? "Primary Motif" 
                                 : isLayerActive 

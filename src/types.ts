@@ -22,6 +22,11 @@ export enum VisualPreset {
   FLUID_LIQUID_SWARM = "Liquid Flow Field Swarm",
   PLAYSTATION_SOUNDSCOPE = "PS1 Retro SoundScope",
   SUPER_SCIENCE_80S = "1980's Super Science",
+  SECURITY_CAM_87 = "Security Cam '87 (Liminal Hall)",
+  ENDOSKELETON_BLUEPRINT = "Animatronic Blueprint (Sister Lab)",
+  LIMINAL_ARCADE_HALL = "Liminal Party Corridor",
+  SPRINGLOCK_MECHANISM = "Springlock Endoskeleton Core",
+  VHS_SIGNAL_HAUNT = "Analog VHS Signal Haunt",
   CUSTOM_JS = "Custom JavaScript Script",
 }
 
@@ -38,6 +43,7 @@ export interface VisualParams {
   customJsCode: string;  // user scripting
   retroHtmlSkin: string; // custom MySpace style HTML code
   enabledLayers?: VisualPreset[]; // overlay visual layers drawn behind/with the active preset
+  layerOpacity?: number; // 0.1 - 0.9 opacity for background layers
 }
 
 export interface VstSettings {

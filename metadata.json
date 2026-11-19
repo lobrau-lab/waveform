@@ -1,0 +1,6 @@
+{
+  "name": "Music Video Visualizer Generator",
+  "description": "An advanced music video visualizer generator and audio editor, featuring real-time Web Audio VST processing, procedural motion visuals, metadata management, notch filters, Python script exporters, and highly customizable Retro MySpace-styled developer settings.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

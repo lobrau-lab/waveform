@@ -12,7 +12,8 @@ import {
   AudioMetadata,
   BatchAudioItem,
   LayoutSkin,
-  StudioProjectState
+  StudioProjectState,
+  SavedStudioPreset
 } from "./types";
 import { DEFAULT_JS_SCRIPT, DEFAULT_MYSPACE_HTML, generatePythonScript } from "./scriptTemplates";
 import { StudioAudioEngine, createReverbImpulseResponse, makeWarmTubeCurve } from "./audioEngine";
@@ -20,6 +21,12 @@ import { drawMainVisuals } from "./visualizers";
 import { VstRack } from "./components/VstRack";
 import { MetadataForm } from "./components/MetadataForm";
 import { PRESET_SKINS } from "./components/MySpaceProfile";
+import {
+  CustomizationStudio,
+  DEFAULT_POST_FX,
+  DEFAULT_OVERLAY_TEXT,
+  DEFAULT_BACKDROP
+} from "./components/CustomizationStudio";
 import { audioBufferToWav } from "./utils/waveEncoder";
 import { audioBufferToMp3 } from "./utils/mp3Encoder";
 import { motion, AnimatePresence } from "motion/react";
@@ -44,8 +51,16 @@ import {
   MonitorPlay,
   Info,
   HelpCircle,
-  Video
+  Video,
+  Camera,
+  Maximize2,
+  Radio,
+  Sliders,
+  Image as ImageIcon,
+  Shuffle
 } from "lucide-react";
+
+const PRESET_VAULT_STORAGE_KEY = "soundscape_custom_presets_v1";
 
 // Initial Project defaults
 const DEFAULT_VISUAL_PARAMS: VisualParams = {
@@ -61,7 +76,10 @@ const DEFAULT_VISUAL_PARAMS: VisualParams = {
   customJsCode: DEFAULT_JS_SCRIPT,
   retroHtmlSkin: DEFAULT_MYSPACE_HTML,
   enabledLayers: [],
-  layerOpacity: 0.45
+  layerOpacity: 0.45,
+  postFx: DEFAULT_POST_FX,
+  overlayText: DEFAULT_OVERLAY_TEXT,
+  backdrop: DEFAULT_BACKDROP
 };
 
 const DEFAULT_VST_SETTINGS: VstSettings = {
@@ -96,7 +114,18 @@ const DEFAULT_METADATA: AudioMetadata = {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<"dashboard" | "designer" | "metadata" | "renderer">("dashboard");
+  const [designerSubTab, setDesignerSubTab] = useState<"presets" | "postfx" | "branding" | "vault">("presets");
   const [presetCategory, setPresetCategory] = useState<"all" | "horror" | "retro" | "kinetic">("all");
+  const [demoSignalActive, setDemoSignalActive] = useState<boolean>(true);
+  const [studioNotice, setStudioNotice] = useState<string | null>(null);
+  const [savedPresets, setSavedPresets] = useState<SavedStudioPreset[]>(() => {
+    try {
+      const raw = localStorage.getItem(PRESET_VAULT_STORAGE_KEY);
+      return raw ? (JSON.parse(raw) as SavedStudioPreset[]) : [];
+    } catch {
+      return [];
+    }
+  });
   const [skinId, setSkinId] = useState<string>("studio-charcoal");
   const [skin, setSkin] = useState<LayoutSkin>(PRESET_SKINS[0]);
   
@@ -148,6 +177,7 @@ export default function App() {
 
   // References
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const monitorContainerRef = useRef<HTMLDivElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const bgAudioRef = useRef<HTMLAudioElement | null>(null); // profile ambient background song helper
   const animationFrameRef = useRef<number | null>(null);
@@ -271,6 +301,200 @@ export default function App() {
     setMetadata(newMeta);
   };
 
+  // Persist Custom Preset Vault to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(PRESET_VAULT_STORAGE_KEY, JSON.stringify(savedPresets));
+    } catch (err) {
+      console.warn("Unable to persist custom presets:", err);
+    }
+  }, [savedPresets]);
+
+  const showTransientNotice = (msg: string) => {
+    setStudioNotice(msg);
+    setTimeout(() => {
+      setStudioNotice((curr) => (curr === msg ? null : curr));
+    }, 2600);
+  };
+
+  // Custom Preset Vault actions
+  const handleSaveCustomPreset = (name: string) => {
+    const newEntry: SavedStudioPreset = {
+      id: `rig-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name,
+      createdAt: new Date().toISOString(),
+      visualParams: JSON.parse(JSON.stringify(visualParams)),
+      vstSettings: { ...vstSettings },
+      resolution,
+      skinId
+    };
+    setSavedPresets((prev) => [newEntry, ...prev]);
+    showTransientNotice(`Saved rig "${name}" to Vault`);
+  };
+
+  const handleLoadCustomPreset = (preset: SavedStudioPreset) => {
+    saveStateToHistory(visualParams, vstSettings, metadata, resolution);
+    setVisualParams({
+      ...DEFAULT_VISUAL_PARAMS,
+      ...preset.visualParams,
+      postFx: { ...DEFAULT_POST_FX, ...(preset.visualParams.postFx || {}) },
+      overlayText: { ...DEFAULT_OVERLAY_TEXT, ...(preset.visualParams.overlayText || {}) },
+      backdrop: { ...DEFAULT_BACKDROP, ...(preset.visualParams.backdrop || {}) }
+    });
+    setVstSettings({ ...DEFAULT_VST_SETTINGS, ...preset.vstSettings });
+    setResolution(preset.resolution || CanvasResolution.YOUTUBE_16_9);
+    if (preset.skinId) setSkinId(preset.skinId);
+    audioEngineRef.current.applySettings(preset.vstSettings);
+    showTransientNotice(`Loaded rig "${preset.name}"`);
+  };
+
+  const handleDeleteCustomPreset = (id: string) => {
+    setSavedPresets((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  const handleExportPresetPack = () => {
+    const payload = savedPresets.length > 0
+      ? savedPresets
+      : [{
+          id: `rig-${Date.now()}`,
+          name: `${visualParams.preset} Export`,
+          createdAt: new Date().toISOString(),
+          visualParams,
+          vstSettings,
+          resolution,
+          skinId
+        }];
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "soundscape_preset_vault.json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showTransientNotice("Exported studio preset pack (.json)");
+  };
+
+  const handleImportPresetPack = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result || "[]"));
+        const list: SavedStudioPreset[] = Array.isArray(parsed) ? parsed : [parsed];
+        const valid = list.filter((item) => item && item.visualParams && item.name);
+        if (valid.length > 0) {
+          setSavedPresets((prev) => [
+            ...valid.map((v) => ({ ...v, id: `imp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}` })),
+            ...prev
+          ]);
+          showTransientNotice(`Imported ${valid.length} preset(s) into Vault`);
+        }
+      } catch {
+        showTransientNotice("Could not parse preset JSON file");
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+
+  // Smart Visual Randomizer / Mutator
+  const handleMutateLook = () => {
+    const presetPool = Object.values(VisualPreset).filter((p) => p !== VisualPreset.CUSTOM_JS);
+    const palettes = [
+      { base: "#7dff9b", sec: "#ffaa2b" },
+      { base: "#38bdf8", sec: "#e0f2fe" },
+      { base: "#e6c86e", sec: "#ff5533" },
+      { base: "#ff2a55", sec: "#ffcc00" },
+      { base: "#f97316", sec: "#38bdf8" },
+      { base: "#ff007f", sec: "#00ffff" },
+      { base: "#a855f7", sec: "#22d3ee" }
+    ];
+    const mirrors: Array<"none" | "horizontal" | "quad"> = ["none", "none", "horizontal", "quad"];
+    const nextPreset = presetPool[Math.floor(Math.random() * presetPool.length)];
+    const nextPalette = palettes[Math.floor(Math.random() * palettes.length)];
+    const nextMirror = mirrors[Math.floor(Math.random() * mirrors.length)];
+
+    handleVisualParamsChange({
+      ...visualParams,
+      preset: nextPreset,
+      baseColor: nextPalette.base,
+      secondaryColor: nextPalette.sec,
+      speed: Number((0.7 + Math.random() * 1.1).toFixed(1)),
+      sensitivity: Number((1.2 + Math.random() * 1.4).toFixed(1)),
+      glow: Math.floor(Math.random() * 14) * 2 + 6,
+      postFx: {
+        ...DEFAULT_POST_FX,
+        ...(visualParams.postFx || {}),
+        scanlines: Number((Math.random() * 0.55).toFixed(2)),
+        grain: Number((Math.random() * 0.45).toFixed(2)),
+        vignette: Number((0.25 + Math.random() * 0.5).toFixed(2)),
+        glitchShift: Number((Math.random() * 0.35).toFixed(2)),
+        beatZoom: Number((0.1 + Math.random() * 0.4).toFixed(2)),
+        mirrorMode: nextMirror
+      }
+    });
+    showTransientNotice(`Mutated to ${nextPreset}`);
+  };
+
+  // Capture instant high-res PNG snapshot of the canvas
+  const handleCaptureSnapshot = () => {
+    if (!canvasRef.current) return;
+    try {
+      const dataUrl = canvasRef.current.toDataURL("image/png");
+      const a = document.createElement("a");
+      a.href = dataUrl;
+      a.download = `soundscape_frame_${Date.now()}.png`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      showTransientNotice("Captured PNG frame snapshot");
+    } catch (err) {
+      console.warn("Snapshot export error:", err);
+    }
+  };
+
+  // Fullscreen toggle for Visual Monitor Stage
+  const handleToggleFullscreen = () => {
+    const el = monitorContainerRef.current;
+    if (!el) return;
+    if (!document.fullscreenElement) {
+      el.requestFullscreen?.().catch(() => {});
+    } else {
+      document.exitFullscreen?.().catch(() => {});
+    }
+  };
+
+  // Global keyboard shortcuts (Ctrl+Z Undo, Ctrl+Y Redo, Space Play/Pause)
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
+        e.preventDefault();
+        handleUndo();
+      } else if (
+        (e.ctrlKey || e.metaKey) &&
+        (e.key.toLowerCase() === "y" || (e.shiftKey && e.key.toLowerCase() === "z"))
+      ) {
+        e.preventDefault();
+        handleRedo();
+      } else if (e.code === "Space") {
+        e.preventDefault();
+        if (currentAudio) {
+          triggerPlay();
+        } else {
+          setDemoSignalActive((prev) => !prev);
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
+
   // Drag and Drop loader
   const decodeAndSetDuration = async (blob: Blob) => {
     // Reset track progress while decoding
@@ -387,8 +611,36 @@ export default function App() {
         const ctx = canvas.getContext("2d");
         
         if (ctx) {
-          const freqData = audioEngineRef.current.getFrequencyData();
-          const timeData = audioEngineRef.current.getTimeDomainData();
+          let freqData = audioEngineRef.current.getFrequencyData();
+          let timeData = audioEngineRef.current.getTimeDomainData();
+
+          // Live Synthetic Preview Signal when no real audio is currently playing
+          const usingDemoSignal = !isPlaying && demoSignalActive;
+          if (usingDemoSignal) {
+            const synthFreq = new Uint8Array(256);
+            const synthTime = new Uint8Array(256);
+            const sec = timestamp * 0.001;
+            const beatPhase = (sec * 1.96) % 1; // ~118 BPM rhythmic pulse
+            const kickEnv = Math.pow(Math.max(0, 1 - beatPhase * 3.4), 2.1);
+            const snarePhase = ((sec * 1.96 + 0.5) % 1);
+            const snareEnv = Math.pow(Math.max(0, 1 - snarePhase * 4.5), 2.5);
+
+            for (let i = 0; i < 256; i++) {
+              const norm = i / 255;
+              const bassEnergy = Math.exp(-norm * 14) * (135 + kickEnv * 115);
+              const midEnergy = Math.exp(-Math.pow((norm - 0.18) * 6, 2)) * (90 + snareEnv * 110 + Math.sin(sec * 2.4 + i * 0.15) * 35);
+              const highEnergy = Math.exp(-Math.pow((norm - 0.45) * 5, 2)) * (55 + Math.abs(Math.sin(sec * 7.8 + i * 0.4)) * 95);
+              synthFreq[i] = Math.max(0, Math.min(255, Math.round(bassEnergy + midEnergy + highEnergy)));
+
+              const wave =
+                Math.sin(sec * 11 + i * 0.14) * (0.32 + kickEnv * 0.45) +
+                Math.sin(sec * 23 + i * 0.37) * (0.18 + snareEnv * 0.25) +
+                Math.cos(sec * 5.2 + i * 0.06) * 0.15;
+              synthTime[i] = Math.max(0, Math.min(255, Math.round(128 + wave * 95)));
+            }
+            freqData = synthFreq;
+            timeData = synthTime;
+          }
 
           // Standard size configuration based on target resolution selection
           let targetW = 852, targetH = 480; // horizontal default pre-comp
@@ -408,7 +660,7 @@ export default function App() {
           }
 
           // Evaluate real-time frequency band levels for the physical bouncing LED meters
-          if (audioEngineRef.current.ctx) {
+          if (audioEngineRef.current.ctx || usingDemoSignal) {
             const lowRange = freqData.slice(0, 8);
             const midRange = freqData.slice(12, 48);
             const highRange = freqData.slice(64, 128);
@@ -674,7 +926,9 @@ export default function App() {
     exportMetadataOverlayEnabled,
     exportAudioSpectrumOverlayEnabled,
     exportOsdBorderEnabled,
-    metadata
+    metadata,
+    demoSignalActive,
+    isPlaying
   ]);
 
   // Audio HTML5 tracking
@@ -1507,21 +1761,59 @@ export default function App() {
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4 p-3 px-4">
           
           <div className="flex items-center gap-5">
-            <span className="text-cyan-400 font-extrabold tracking-tighter text-xl font-mono">SONIC_VISUAL_GEN_v3</span>
-            <div className="hidden md:flex gap-4 text-xs font-mono uppercase tracking-widest opacity-60">
-              <span className="hover:text-cyan-400 cursor-pointer">File</span>
-              <span className="hover:text-cyan-400 cursor-pointer text-cyan-400 underline underline-offset-4">Visualize</span>
-              <span className="hover:text-cyan-400 cursor-pointer">Metadata</span>
-              <span className="hover:text-cyan-400 cursor-pointer">Batch</span>
-              <span className="hover:text-cyan-400 cursor-pointer">Scripts</span>
-            </div>
+            <span className="text-cyan-400 font-extrabold tracking-tighter text-xl font-mono whitespace-nowrap shrink-0">SOUNDSCAPE STUDIO</span>
+            <nav className="hidden md:flex gap-4 text-xs font-mono uppercase tracking-widest">
+              <button
+                type="button"
+                onClick={() => setActiveTab("dashboard")}
+                className={`cursor-pointer transition-colors whitespace-nowrap shrink-0 ${activeTab === "dashboard" ? "text-cyan-400 underline underline-offset-4" : "text-gray-400 hover:text-cyan-300"}`}
+              >
+                Audio &amp; VST
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab("designer");
+                  setDesignerSubTab("presets");
+                }}
+                className={`cursor-pointer transition-colors whitespace-nowrap shrink-0 ${activeTab === "designer" && designerSubTab !== "vault" ? "text-cyan-400 underline underline-offset-4" : "text-gray-400 hover:text-cyan-300"}`}
+              >
+                Visualize
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab("designer");
+                  setDesignerSubTab("vault");
+                }}
+                className={`cursor-pointer transition-colors whitespace-nowrap shrink-0 ${activeTab === "designer" && designerSubTab === "vault" ? "text-cyan-400 underline underline-offset-4" : "text-gray-400 hover:text-cyan-300"}`}
+              >
+                Vault
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab("metadata")}
+                className={`cursor-pointer transition-colors whitespace-nowrap shrink-0 ${activeTab === "metadata" ? "text-cyan-400 underline underline-offset-4" : "text-gray-400 hover:text-cyan-300"}`}
+              >
+                Metadata
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab("renderer")}
+                className={`cursor-pointer transition-colors whitespace-nowrap shrink-0 ${activeTab === "renderer" ? "text-cyan-400 underline underline-offset-4" : "text-gray-400 hover:text-cyan-300"}`}
+              >
+                Render
+              </button>
+            </nav>
           </div>
 
           {/* UNDO / REDO & SKIN CONTROLS */}
           <div className="flex items-center gap-3">
-            <div className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-1 border border-emerald-500/20 rounded hidden sm:block">
-              VST_ENGINE: STABLE
-            </div>
+            {studioNotice && (
+              <div className="text-[10px] font-mono text-yellow-400 bg-yellow-500/10 px-2.5 py-1 border border-yellow-500/30 rounded hidden sm:block whitespace-nowrap">
+                {studioNotice}
+              </div>
+            )}
 
             <div className="flex items-center bg-[#0E0E11] border border-[#2A2A2E] rounded p-1 shadow-inner">
               <button
@@ -1597,43 +1889,98 @@ export default function App() {
           <div className="lg:col-span-6 space-y-4">
             
             <div className={`p-4 rounded-xl border-2 ${skin.borderColor} ${skin.panelBg} relative shadow-xl shadow-black/40`}>
-              <div className="flex items-center justify-between pb-2 mb-3 border-b border-[#2A2A2E]">
-                <span className="text-xs font-mono font-bold text-gray-400 flex items-center gap-1">
-                  <MonitorPlay size={14} className="text-cyan-400" /> Active Visual Monitor Stage
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-2 mb-3 border-b border-[#2A2A2E]">
+                <span className="text-xs font-mono font-bold text-gray-400 flex items-center gap-1.5 whitespace-nowrap">
+                  <MonitorPlay size={14} className="text-cyan-400" /> Active Visual Monitor
                 </span>
                 
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] font-mono bg-[#111114] border border-[#2A2A2E] px-2 py-0.5 rounded text-cyan-400 uppercase">
-                    Ratio: {resolution}
-                  </span>
-                  
-                  <span className="w-2 h-2 rounded-full bg-cyan-500 animate-pulse" />
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <select
+                    aria-label="Aspect Ratio"
+                    value={resolution}
+                    onChange={(e) => setResolution(e.target.value as CanvasResolution)}
+                    className="text-[10px] font-mono bg-[#111114] border border-[#2A2A2E] px-1.5 py-1 rounded text-cyan-400 focus:outline-none focus:ring-1 focus:ring-cyan-500 cursor-pointer"
+                  >
+                    {Object.values(CanvasResolution).map((res) => (
+                      <option key={res} value={res} className="bg-[#111114] text-gray-200">{res.split(" (")[0]}</option>
+                    ))}
+                  </select>
+
+                  <button
+                    type="button"
+                    onClick={() => setDemoSignalActive((prev) => !prev)}
+                    title={demoSignalActive ? "Live Synth Preview Active" : "Enable Live Synth Preview"}
+                    className={`px-2 py-1 rounded text-[10px] font-mono border flex items-center gap-1 cursor-pointer transition-colors whitespace-nowrap ${
+                      !isPlaying && demoSignalActive
+                        ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
+                        : "bg-[#111114] border-[#2A2A2E] text-gray-400 hover:text-gray-200"
+                    }`}
+                  >
+                    <Radio size={11} /> {!isPlaying && demoSignalActive ? "Synth Live" : "Synth Off"}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleMutateLook}
+                    title="Mutate Random Visual Look"
+                    className="p-1.5 rounded bg-[#111114] border border-[#2A2A2E] text-gray-300 hover:text-yellow-400 hover:border-yellow-500/40 cursor-pointer transition-colors"
+                  >
+                    <Shuffle size={12} />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleCaptureSnapshot}
+                    title="Capture PNG Snapshot"
+                    className="p-1.5 rounded bg-[#111114] border border-[#2A2A2E] text-gray-300 hover:text-cyan-400 hover:border-cyan-500/40 cursor-pointer transition-colors"
+                  >
+                    <Camera size={12} />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleToggleFullscreen}
+                    title="Fullscreen Monitor"
+                    className="p-1.5 rounded bg-[#111114] border border-[#2A2A2E] text-gray-300 hover:text-cyan-400 hover:border-cyan-500/40 cursor-pointer transition-colors"
+                  >
+                    <Maximize2 size={12} />
+                  </button>
                 </div>
               </div>
 
               {/* Canvas element adjusting layout dynamic height */}
-              <div className="relative w-full overflow-hidden bg-black/95 aspect-video rounded-lg flex items-center justify-center border border-[#1A1A1E] group">
+              <div
+                ref={monitorContainerRef}
+                className="relative w-full overflow-hidden bg-black/95 aspect-video rounded-lg flex items-center justify-center border border-[#1A1A1E] group"
+              >
                 <canvas
                   ref={canvasRef}
                   className="max-h-full max-w-full object-contain"
                 />
                 
-                {/* Visualizer center play/pause floating button overlay */}
-                {!currentAudio && (
-                  <div className="absolute inset-x-0 inset-y-0 bg-[#0A0A0B]/95 flex flex-col items-center justify-center p-6 text-center select-none border border-[#2A2A2E]">
-                    <div className="w-12 h-12 rounded-full bg-cyan-500/10 text-cyan-400 flex items-center justify-center border border-cyan-500/30 mb-3 animate-pulse">
+                {/* Empty state only when no track AND synthetic preview is paused */}
+                {!currentAudio && !demoSignalActive && (
+                  <div className="absolute inset-x-0 inset-y-0 bg-[#0A0A0B]/92 flex flex-col items-center justify-center p-6 text-center select-none border border-[#2A2A2E]">
+                    <div className="w-12 h-12 rounded-full bg-cyan-500/10 text-cyan-400 flex items-center justify-center border border-cyan-500/30 mb-3">
                       <Upload size={22} />
                     </div>
-                    <h3 className="text-sm font-bold font-mono text-gray-200">NO AUDIO STREAM LOADED</h3>
-                    <p className="text-[10px] text-gray-500 font-mono mt-1 max-w-[280px]">
-                      Drag and drop any MP3, WAV, or ALAC/M4A music file onto the upload pad on Tab 1 to initiate the VST pipeline & procedural visuals.
+                    <h3 className="text-sm font-bold font-mono text-gray-200">MONITOR STANDBY</h3>
+                    <p className="text-[10px] text-gray-400 font-mono mt-1 max-w-[300px]">
+                      Upload an MP3, WAV, or M4A track on the Dashboard, or launch the built-in Live Synth Signal to customize presets in real time.
                     </p>
+                    <button
+                      type="button"
+                      onClick={() => setDemoSignalActive(true)}
+                      className="mt-3 px-4 py-1.5 rounded bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-mono font-bold cursor-pointer transition-colors"
+                    >
+                      Launch Live Synth Preview
+                    </button>
                   </div>
                 )}
               </div>
 
-              {/* REAL-TIME LED EQUALIZER METERS (Inspired by physical high-end rack units) */}
-              {currentAudio && (
+              {/* REAL-TIME LED EQUALIZER METERS (Active for both live audio and synth signal preview) */}
+              {(currentAudio || demoSignalActive) && (
                 <div className="mt-4 p-3 bg-black/85 rounded-lg border border-[#2A2A2E] grid grid-cols-3 gap-3 font-mono">
                   <div>
                     <div className="flex justify-between text-[9px] text-[#22D3EE]/80 uppercase font-black tracking-widest mb-1.5">
@@ -1858,7 +2205,7 @@ export default function App() {
                 </motion.div>
               )}
 
-              {/* TAB 2: VISUAL PRESETS & DESIGNER */}
+              {/* TAB 2: VISUAL PRESETS & CUSTOMIZATION STUDIO */}
               {activeTab === "designer" && (
                 <motion.div
                   initial={{ opacity: 0, y: 10 }}
@@ -1866,6 +2213,53 @@ export default function App() {
                   exit={{ opacity: 0, y: -10 }}
                   className="space-y-4"
                 >
+                  {/* Designer Sub-Navigation Bar */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 bg-[#0d0e13] border border-[#1f2937] p-1.5 rounded-lg">
+                    {[
+                      { id: "presets" as const, label: "Presets & Layers", icon: Tv },
+                      { id: "postfx" as const, label: "Post-FX & Optics", icon: Sliders },
+                      { id: "branding" as const, label: "Backdrop & Text", icon: ImageIcon },
+                      { id: "vault" as const, label: `Vault (${savedPresets.length})`, icon: Save }
+                    ].map((sub) => {
+                      const SubIcon = sub.icon;
+                      const isSubActive = designerSubTab === sub.id;
+                      return (
+                        <button
+                          key={sub.id}
+                          type="button"
+                          onClick={() => setDesignerSubTab(sub.id)}
+                          className={`px-2.5 py-2 rounded-md text-[11px] font-mono font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
+                            isSubActive
+                              ? "bg-yellow-500 text-black"
+                              : "text-gray-400 hover:text-gray-100 hover:bg-white/5"
+                          }`}
+                        >
+                          <SubIcon size={13} /> {sub.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {designerSubTab !== "presets" && (
+                    <CustomizationStudio
+                      section={designerSubTab}
+                      visualParams={visualParams}
+                      coverArtUrl={metadata.coverArtUrl}
+                      trackTitle={metadata.title}
+                      trackArtist={metadata.artist}
+                      savedPresets={savedPresets}
+                      onChangeVisualParams={handleVisualParamsChange}
+                      onSaveCustomPreset={handleSaveCustomPreset}
+                      onLoadCustomPreset={handleLoadCustomPreset}
+                      onDeleteCustomPreset={handleDeleteCustomPreset}
+                      onExportPresetPack={handleExportPresetPack}
+                      onImportPresetPack={handleImportPresetPack}
+                      onMutateLook={handleMutateLook}
+                    />
+                  )}
+
+                  {designerSubTab === "presets" && (
+                    <>
                   <div className="bg-[#101116] border border-[#1f2937] rounded-lg p-5">
                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4 border-b border-gray-800 pb-3">
                       <h3 className="font-bold flex items-center gap-2 text-sm text-yellow-500 font-mono tracking-widest uppercase">
@@ -2089,9 +2483,25 @@ export default function App() {
                         />
                       </div>
 
-                      <div className="sm:col-span-2">
+                      <div>
                         <div className="flex justify-between text-[11px] font-mono mb-1 text-gray-300 tabular-nums">
-                          <span>CRT Frame Persistence / Motion Blur:</span>
+                          <span>Particle / Element Density:</span>
+                          <span className="text-yellow-500 font-bold">{visualParams.particleCount}</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="40"
+                          max="400"
+                          step="10"
+                          className="w-full accent-yellow-500 cursor-pointer h-1.5 bg-gray-800 rounded-lg appearance-none"
+                          value={visualParams.particleCount}
+                          onChange={(e) => handleVisualParamsChange({ ...visualParams, particleCount: parseInt(e.target.value) })}
+                        />
+                      </div>
+
+                      <div>
+                        <div className="flex justify-between text-[11px] font-mono mb-1 text-gray-300 tabular-nums">
+                          <span>CRT Frame Persistence:</span>
                           <span className="text-yellow-500 font-bold">{Math.round((1 - (visualParams.bgOpacity ?? 0.25)) * 100)}%</span>
                         </div>
                         <input
@@ -2104,8 +2514,8 @@ export default function App() {
                           onChange={(e) => handleVisualParamsChange({ ...visualParams, bgOpacity: parseFloat(e.target.value) })}
                         />
                         <div className="flex justify-between text-[9px] font-mono text-gray-500 mt-1">
-                          <span>Ghostly Analog Trails</span>
-                          <span>Crisp Surveillance Frame</span>
+                          <span>Analog Trails</span>
+                          <span>Crisp Frame</span>
                         </div>
                       </div>
 
@@ -2301,6 +2711,8 @@ export default function App() {
                         <span>Compiles dynamically in safe functional sandbox</span>
                       </div>
                     </div>
+                  )}
+                    </>
                   )}
                 </motion.div>
               )}

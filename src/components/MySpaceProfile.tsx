@@ -78,6 +78,39 @@ input[type="range"] {
     borderColor: "border-white",
     customCss: `* { font-family: 'MS Sans Serif', 'Arial', sans-serif; }
 .myspace-contact-badge { background: #000080 !important; color: white !important; }`
+  },
+  {
+    id: "fazbear-cctv",
+    name: "1987 Security Monitor",
+    primaryBg: "bg-[#060907]",
+    panelBg: "bg-[#0b110d]",
+    textColor: "text-[#c8f5d4]",
+    accentColor: "border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/10 bg-[#09100b]",
+    borderColor: "border-[#1d3124]",
+    customCss: `input[type="range"] { accent-color: #4ade80 !important; }
+.header-banner { background: #0a120c !important; border-bottom: 2px solid #22543d !important; }`
+  },
+  {
+    id: "sister-blueprint",
+    name: "Subterranean Lab Blueprint",
+    primaryBg: "bg-[#040c1a]",
+    panelBg: "bg-[#08152b]",
+    textColor: "text-[#d4edff]",
+    accentColor: "border-sky-400/50 text-sky-300 hover:bg-sky-500/10 bg-[#071426]",
+    borderColor: "border-[#19355c]",
+    customCss: `input[type="range"] { accent-color: #38bdf8 !important; }
+.header-banner { background: #081830 !important; border-bottom: 2px solid #1e4b85 !important; }`
+  },
+  {
+    id: "backrooms-amber",
+    name: "Liminal Sodium Amber",
+    primaryBg: "bg-[#0d0b07]",
+    panelBg: "bg-[#16130c]",
+    textColor: "text-[#f2e2ba]",
+    accentColor: "border-amber-500/50 text-amber-400 hover:bg-amber-500/10 bg-[#14110b]",
+    borderColor: "border-[#382f1b]",
+    customCss: `input[type="range"] { accent-color: #f59e0b !important; }
+.header-banner { background: #19150d !important; border-bottom: 2px solid #594622 !important; }`
   }
 ];
 
@@ -169,21 +202,21 @@ export const MySpaceProfile: React.FC<MySpaceProfileProps> = ({
           </h4>
           <div className="grid grid-cols-4 sm:grid-cols-8 gap-3">
             {[
-              { name: "Tom", img: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=80&fit=crop&q=60" },
-              { name: "MySpace Developer", img: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=80&fit=crop&q=60" },
-              { name: "Web Shaders", img: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=80&fit=crop&q=60" },
-              { name: "Notch Filter", img: "https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?w=80&fit=crop&q=60" },
-              { name: "Analog Delay", img: "https://images.unsplash.com/photo-1517841905240-472988babdf9?w=80&fit=crop&q=60" },
-              { name: "VST Convolve", img: "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=80&fit=crop&q=60" },
-              { name: "MP4 Render", img: "https://images.unsplash.com/photo-1531746020798-e6953c6e8e04?w=80&fit=crop&q=60" },
-              { name: "Batch Audio", img: "https://images.unsplash.com/photo-1501196354995-cbb51c65aaea?w=80&fit=crop&q=60" }
+              { name: "Tom", code: "TM", tone: "from-sky-600 to-indigo-900" },
+              { name: "Audio DSP", code: "DS", tone: "from-emerald-600 to-teal-900" },
+              { name: "Web Shaders", code: "WS", tone: "from-fuchsia-600 to-purple-950" },
+              { name: "Notch Filter", code: "NF", tone: "from-amber-600 to-orange-950" },
+              { name: "Analog Delay", code: "AD", tone: "from-cyan-600 to-slate-900" },
+              { name: "VST Rack", code: "VR", tone: "from-rose-600 to-red-950" },
+              { name: "MP4 Render", code: "MP", tone: "from-violet-600 to-indigo-950" },
+              { name: "Batch Audio", code: "BA", tone: "from-lime-600 to-emerald-950" }
             ].map((friend, idx) => (
               <div key={idx} className="flex flex-col items-center">
-                <img
-                  src={friend.img}
-                  alt={friend.name}
-                  className="w-10 h-10 rounded-md border border-amber-600 object-cover cursor-pointer hover:scale-105 transition-transform"
-                />
+                <div
+                  className={`w-10 h-10 rounded-md border border-amber-600/70 bg-gradient-to-br ${friend.tone} flex items-center justify-center text-xs font-mono font-bold text-white cursor-pointer hover:scale-105 transition-transform`}
+                >
+                  {friend.code}
+                </div>
                 <span className="text-[10px] text-gray-400 mt-1 truncate max-w-full font-mono">{friend.name}</span>
               </div>
             ))}

@@ -91,50 +91,325 @@ export function drawPreset(preset: VisualPreset, options: DrawOptions, currentPa
   }
 }
 
+// Reusable cached backdrop image & offscreen scratch buffer for zero-GC post-FX/mirroring
+let cachedBackdropUrl = "";
+let cachedBackdropImg: HTMLImageElement | null = null;
+let cachedBackdropLoaded = false;
+let scratchCanvas: HTMLCanvasElement | null = null;
+
+function getBackdropImage(url: string): HTMLImageElement | null {
+  if (!url) {
+    cachedBackdropUrl = "";
+    cachedBackdropImg = null;
+    cachedBackdropLoaded = false;
+    return null;
+  }
+  if (url !== cachedBackdropUrl) {
+    cachedBackdropUrl = url;
+    cachedBackdropLoaded = false;
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      if (cachedBackdropUrl === url) {
+        cachedBackdropLoaded = true;
+      }
+    };
+    img.onerror = () => {
+      if (cachedBackdropUrl === url) {
+        cachedBackdropLoaded = false;
+      }
+    };
+    img.src = url;
+    cachedBackdropImg = img;
+  }
+  return cachedBackdropLoaded && cachedBackdropImg ? cachedBackdropImg : null;
+}
+
+function getScratchCanvas(width: number, height: number): HTMLCanvasElement | null {
+  if (typeof document === "undefined") return null;
+  if (!scratchCanvas) {
+    scratchCanvas = document.createElement("canvas");
+  }
+  if (scratchCanvas.width !== width || scratchCanvas.height !== height) {
+    scratchCanvas.width = width;
+    scratchCanvas.height = height;
+  }
+  return scratchCanvas;
+}
+
 export function drawMainVisuals(options: DrawOptions) {
-  const { ctx, width, height, params, prevParams, progress = 1 } = options;
+  const { ctx, width, height, freqData, time, params, prevParams, progress = 1 } = options;
+  const postFx = params.postFx;
+  const backdrop = params.backdrop;
+  const overlayText = params.overlayText;
+
+  const bassVal = (freqData[2] || 0) / 255;
+  const midVal = (freqData[24] || 0) / 255;
+  const trebleVal = (freqData[85] || 0) / 255;
+  const sens = params.sensitivity || 1;
 
   // Apply motion-blur trails by clearing with an alpha opacity
   const alpha = params.bgOpacity ?? 0.3;
   ctx.fillStyle = `rgba(10, 10, 12, ${alpha})`;
   ctx.fillRect(0, 0, width, height);
 
-  // 1. Draw any active background layers first!
+  // 0. Custom Backdrop Image (uploaded image or cover art)
+  if (backdrop && backdrop.imageUrl && backdrop.opacity > 0) {
+    const img = getBackdropImage(backdrop.imageUrl);
+    if (img && img.naturalWidth > 0 && img.naturalHeight > 0) {
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, Math.max(0, backdrop.opacity));
+      if (backdrop.blur > 0) {
+        ctx.filter = `blur(${backdrop.blur}px)`;
+      }
+      const pulseScale = backdrop.audioPulse ? 1 + bassVal * 0.1 * sens : 1;
+      const imgRatio = img.naturalWidth / img.naturalHeight;
+      const canvasRatio = width / height;
+      let drawW = width;
+      let drawH = height;
+      if (imgRatio > canvasRatio) {
+        drawH = height;
+        drawW = height * imgRatio;
+      } else {
+        drawW = width;
+        drawH = width / imgRatio;
+      }
+      drawW *= pulseScale * 1.06;
+      drawH *= pulseScale * 1.06;
+      ctx.drawImage(img, (width - drawW) / 2, (height - drawH) / 2, drawW, drawH);
+      ctx.filter = "none";
+      ctx.restore();
+    }
+  }
+
+  // Optional Beat Camera Zoom & Micro-Shake
+  const beatZoomAmt = postFx?.beatZoom ?? 0;
+  ctx.save();
+  if (beatZoomAmt > 0) {
+    const zoomScale = 1 + bassVal * 0.14 * beatZoomAmt * sens;
+    const shakeScale = bassVal * sens > 0.55 ? beatZoomAmt * bassVal * 10 : 0;
+    const sx = shakeScale > 0 ? (pseudoRand(Math.floor(time / 32)) - 0.5) * shakeScale : 0;
+    const sy = shakeScale > 0 ? (pseudoRand(Math.floor(time / 32) + 41) - 0.5) * shakeScale : 0;
+    ctx.translate(width / 2 + sx, height / 2 + sy);
+    ctx.scale(zoomScale, zoomScale);
+    ctx.translate(-width / 2, -height / 2);
+  }
+
+  // 1. Draw any active background layers first with configurable blend mode
   if (params.enabledLayers && params.enabledLayers.length > 0) {
     const layerAlpha = params.layerOpacity ?? 0.45;
+    const blendMode = postFx?.blendMode || "source-over";
     params.enabledLayers.forEach((layerPreset) => {
-      // Don't draw the master preset twice as a layer
       if (layerPreset !== params.preset) {
         ctx.save();
         ctx.globalAlpha = layerAlpha;
+        ctx.globalCompositeOperation = blendMode;
         drawPreset(layerPreset, options, params);
         ctx.restore();
       }
     });
   }
 
-  // 2. Draw master preset with transitions
+  // 2. Draw master preset with cross-fade transitions
   if (prevParams && progress < 1) {
-    // Draw previous preset fading out
     ctx.save();
     ctx.globalAlpha = 1 - progress;
     drawPreset(prevParams.preset, options, prevParams);
     ctx.restore();
 
-    // Draw new preset fading in
     ctx.save();
     ctx.globalAlpha = progress;
     drawPreset(params.preset, options, params);
     ctx.restore();
   } else {
-    // Standard single rendering
     ctx.save();
     drawPreset(params.preset, options, params);
     ctx.restore();
   }
 
-  // Reset shadow for performance down the road
+  ctx.restore();
   ctx.shadowBlur = 0;
+
+  // 3. Kaleidoscope / Mirror Symmetry Pass
+  if (postFx && postFx.mirrorMode && postFx.mirrorMode !== "none") {
+    const scratch = getScratchCanvas(width, height);
+    if (scratch) {
+      const sctx = scratch.getContext("2d");
+      if (sctx) {
+        sctx.clearRect(0, 0, width, height);
+        sctx.drawImage(ctx.canvas, 0, 0);
+
+        const halfW = width / 2;
+        const halfH = height / 2;
+
+        if (postFx.mirrorMode === "horizontal") {
+          ctx.save();
+          ctx.translate(width, 0);
+          ctx.scale(-1, 1);
+          ctx.drawImage(scratch, 0, 0, halfW, height, 0, 0, halfW, height);
+          ctx.restore();
+        } else if (postFx.mirrorMode === "quad") {
+          // Top-right mirrors top-left
+          ctx.save();
+          ctx.translate(width, 0);
+          ctx.scale(-1, 1);
+          ctx.drawImage(scratch, 0, 0, halfW, halfH, 0, 0, halfW, halfH);
+          ctx.restore();
+          // Bottom-left mirrors top-left vertically
+          ctx.save();
+          ctx.translate(0, height);
+          ctx.scale(1, -1);
+          ctx.drawImage(scratch, 0, 0, halfW, halfH, 0, 0, halfW, halfH);
+          ctx.restore();
+          // Bottom-right mirrors both axes
+          ctx.save();
+          ctx.translate(width, height);
+          ctx.scale(-1, -1);
+          ctx.drawImage(scratch, 0, 0, halfW, halfH, 0, 0, halfW, halfH);
+          ctx.restore();
+        }
+      }
+    }
+  }
+
+  // 4. Global Post-Processing & Analog FX Pass (Glitch Slices, Scanlines, Grain, Vignette)
+  if (postFx) {
+    // 4a. Chromatic Glitch & Horizontal Tear Slices
+    if (postFx.glitchShift > 0) {
+      const intensity = postFx.glitchShift;
+      const scratch = getScratchCanvas(width, height);
+      if (scratch) {
+        const sctx = scratch.getContext("2d");
+        if (sctx) {
+          sctx.clearRect(0, 0, width, height);
+          sctx.drawImage(ctx.canvas, 0, 0);
+
+          const sliceCount = Math.max(2, Math.floor(2 + intensity * 8 * (0.4 + bassVal * sens)));
+          for (let i = 0; i < sliceCount; i++) {
+            const seed = Math.floor(time / 55) + i * 17;
+            if (pseudoRand(seed) > 0.45 - intensity * 0.25) {
+              const sy = pseudoRand(seed + 3) * height;
+              const sh = 4 + pseudoRand(seed + 7) * (height * 0.08 * intensity);
+              const shift = (pseudoRand(seed + 11) - 0.5) * (24 + bassVal * 55 * sens) * intensity;
+              ctx.drawImage(scratch, 0, sy, width, sh, shift, sy, width, sh);
+
+              // Subtle chromatic edge tint on glitched slice
+              ctx.fillStyle = i % 2 === 0
+                ? `rgba(255, 30, 80, ${0.12 * intensity})`
+                : `rgba(0, 240, 255, ${0.12 * intensity})`;
+              ctx.fillRect(0, sy, width, Math.min(3, sh));
+            }
+          }
+        }
+      }
+    }
+
+    // 4b. Global CRT Scanlines
+    if (postFx.scanlines > 0) {
+      ctx.save();
+      ctx.fillStyle = `rgba(0, 0, 0, ${postFx.scanlines * 0.42})`;
+      for (let y = 0; y < height; y += 3) {
+        ctx.fillRect(0, y, width, 1.3);
+      }
+      ctx.restore();
+    }
+
+    // 4c. Analog Film Grain / VHS Static Snow
+    if (postFx.grain > 0) {
+      ctx.save();
+      const speckCount = Math.floor(60 + postFx.grain * 360 * (0.6 + trebleVal * 0.8));
+      for (let i = 0; i < speckCount; i++) {
+        const gx = pseudoRand(time * 0.03 + i * 2.13) * width;
+        const gy = pseudoRand(time * 0.05 + i * 4.71) * height;
+        const gw = 1.5 + pseudoRand(i * 9.2) * (4 + postFx.grain * 10);
+        const bright = pseudoRand(i + Math.floor(time / 40)) > 0.45;
+        ctx.fillStyle = bright
+          ? `rgba(245, 250, 255, ${postFx.grain * 0.24})`
+          : `rgba(0, 0, 0, ${postFx.grain * 0.3})`;
+        ctx.fillRect(gx, gy, gw, 1.5);
+      }
+      ctx.restore();
+    }
+
+    // 4d. CRT Edge Vignette
+    if (postFx.vignette > 0) {
+      ctx.save();
+      const vig = ctx.createRadialGradient(
+        width / 2,
+        height / 2,
+        Math.min(width, height) * (0.46 - postFx.vignette * 0.2),
+        width / 2,
+        height / 2,
+        Math.max(width, height) * 0.75
+      );
+      vig.addColorStop(0, "rgba(0, 0, 0, 0)");
+      vig.addColorStop(1, `rgba(0, 0, 0, ${Math.min(0.95, postFx.vignette * 0.92)})`);
+      ctx.fillStyle = vig;
+      ctx.fillRect(0, 0, width, height);
+      ctx.restore();
+    }
+  }
+
+  // 5. Custom On-Canvas Title & Subtitle Typography Overlay
+  if (overlayText && overlayText.enabled && (overlayText.title.trim() || overlayText.subtitle.trim())) {
+    ctx.save();
+    const padX = Math.max(28, width * 0.045);
+    const padY = Math.max(28, height * 0.06);
+    const scaleFactor = width / 1280;
+    const reactiveScale = overlayText.audioReactive ? 1 + bassVal * 0.08 * sens : 1;
+    const titleSize = Math.max(14, Math.round(overlayText.fontSize * scaleFactor * reactiveScale));
+    const subSize = Math.max(10, Math.round(titleSize * 0.44));
+
+    let fontFamily = "'JetBrains Mono', 'Courier New', monospace";
+    if (overlayText.fontStyle === "display") fontFamily = "'Outfit', 'Plus Jakarta Sans', sans-serif";
+    if (overlayText.fontStyle === "serif") fontFamily = "Georgia, 'Times New Roman', serif";
+    if (overlayText.fontStyle === "terminal") fontFamily = "'Courier New', monospace";
+
+    let x = padX;
+    let y = padY + titleSize;
+    let align: CanvasTextAlign = "left";
+
+    if (overlayText.position === "top-center") {
+      x = width / 2;
+      y = padY + titleSize;
+      align = "center";
+    } else if (overlayText.position === "center") {
+      x = width / 2;
+      y = height / 2;
+      align = "center";
+    } else if (overlayText.position === "bottom-left") {
+      x = padX;
+      y = height - padY - (overlayText.subtitle.trim() ? subSize + 10 : 0);
+      align = "left";
+    } else if (overlayText.position === "bottom-center") {
+      x = width / 2;
+      y = height - padY - (overlayText.subtitle.trim() ? subSize + 10 : 0);
+      align = "center";
+    }
+
+    ctx.globalAlpha = Math.min(1, Math.max(0.1, overlayText.opacity));
+    ctx.textAlign = align;
+    ctx.shadowColor = params.baseColor || "#22d3ee";
+    ctx.shadowBlur = overlayText.audioReactive ? 10 + (bassVal + midVal) * 24 * sens : 8;
+
+    if (overlayText.title.trim()) {
+      ctx.font = `800 ${titleSize}px ${fontFamily}`;
+      ctx.fillStyle = "#ffffff";
+      const jitterX = overlayText.fontStyle === "terminal" && overlayText.audioReactive && bassVal > 0.6
+        ? (pseudoRand(Math.floor(time / 40)) - 0.5) * 6
+        : 0;
+      ctx.fillText(overlayText.title, x + jitterX, y);
+    }
+
+    if (overlayText.subtitle.trim()) {
+      ctx.shadowBlur = 4;
+      ctx.font = `600 ${subSize}px ${fontFamily}`;
+      ctx.fillStyle = params.secondaryColor || "#94a3b8";
+      ctx.fillText(overlayText.subtitle, x, y + subSize + 8);
+    }
+
+    ctx.restore();
+  }
 }
 
 function drawNeonWaveform({ ctx, width, height, timeData, params }: DrawOptions) {

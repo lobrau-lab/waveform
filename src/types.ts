@@ -30,6 +30,39 @@ export enum VisualPreset {
   CUSTOM_JS = "Custom JavaScript Script",
 }
 
+export type LayerBlendMode = "source-over" | "screen" | "lighter" | "overlay" | "difference";
+export type MirrorSymmetryMode = "none" | "horizontal" | "quad";
+export type OverlayPosition = "top-left" | "top-center" | "center" | "bottom-left" | "bottom-center";
+export type OverlayFontStyle = "mono" | "display" | "serif" | "terminal";
+
+export interface PostFxSettings {
+  scanlines: number;          // 0 - 1
+  grain: number;              // 0 - 1
+  vignette: number;           // 0 - 1
+  glitchShift: number;        // 0 - 1
+  beatZoom: number;           // 0 - 1
+  mirrorMode: MirrorSymmetryMode;
+  blendMode: LayerBlendMode;
+}
+
+export interface CustomOverlaySettings {
+  enabled: boolean;
+  title: string;
+  subtitle: string;
+  position: OverlayPosition;
+  fontStyle: OverlayFontStyle;
+  fontSize: number;           // 16 - 72
+  opacity: number;            // 0.1 - 1
+  audioReactive: boolean;
+}
+
+export interface BackdropSettings {
+  imageUrl: string;
+  opacity: number;            // 0 - 1
+  blur: number;               // 0 - 24 px
+  audioPulse: boolean;
+}
+
 export interface VisualParams {
   preset: VisualPreset;
   speed: number;        // scale 0.1 - 3
@@ -44,6 +77,19 @@ export interface VisualParams {
   retroHtmlSkin: string; // custom MySpace style HTML code
   enabledLayers?: VisualPreset[]; // overlay visual layers drawn behind/with the active preset
   layerOpacity?: number; // 0.1 - 0.9 opacity for background layers
+  postFx?: PostFxSettings;
+  overlayText?: CustomOverlaySettings;
+  backdrop?: BackdropSettings;
+}
+
+export interface SavedStudioPreset {
+  id: string;
+  name: string;
+  createdAt: string;
+  visualParams: VisualParams;
+  vstSettings: VstSettings;
+  resolution: CanvasResolution;
+  skinId: string;
 }
 
 export interface VstSettings {

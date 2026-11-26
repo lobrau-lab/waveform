@@ -9,12 +9,23 @@ import {
   PostFxSettings,
   CustomOverlaySettings,
   BackdropSettings,
+  LyricsSettings,
+  TimedLyricLine,
   SavedStudioPreset,
   LayerBlendMode,
   MirrorSymmetryMode,
   OverlayPosition,
-  OverlayFontStyle
+  OverlayFontStyle,
+  LyricDisplayStyle,
+  LyricDisplayPosition,
+  WhisperModelId
 } from "../types";
+import {
+  formatLrcTime,
+  exportLyricsToLrc,
+  exportLyricsToSrt,
+  parseLrcOrSrt
+} from "../utils/lyricsCodec";
 import {
   Sliders,
   Image as ImageIcon,
@@ -26,7 +37,12 @@ import {
   Shuffle,
   RotateCcw,
   Sparkles,
-  Check
+  Check,
+  Zap,
+  Mic,
+  Plus,
+  Clock,
+  Square
 } from "lucide-react";
 
 export const DEFAULT_POST_FX: PostFxSettings = {
@@ -35,6 +51,9 @@ export const DEFAULT_POST_FX: PostFxSettings = {
   vignette: 0.25,
   glitchShift: 0,
   beatZoom: 0.15,
+  strobeEnabled: false,
+  strobeIntensity: 0.65,
+  strobeThreshold: 0.42,
   mirrorMode: "none",
   blendMode: "source-over"
 };
@@ -57,14 +76,39 @@ export const DEFAULT_BACKDROP: BackdropSettings = {
   audioPulse: true
 };
 
+export const DEFAULT_LYRICS: LyricsSettings = {
+  enabled: true,
+  lines: [],
+  style: "karaoke",
+  position: "bottom",
+  fontSize: 34,
+  offsetSec: 0,
+  showNextLine: true,
+  modelId: "onnx-community/whisper-tiny.en"
+};
+
+export interface WhisperJobState {
+  status: "idle" | "resampling" | "loading" | "transcribing" | "complete" | "error";
+  progress: number;
+  message: string;
+  error?: string | null;
+}
+
 interface CustomizationStudioProps {
-  section: "postfx" | "branding" | "vault";
+  section: "postfx" | "branding" | "lyrics" | "vault";
   visualParams: VisualParams;
+  highLevel: number;
+  currentTimeSec: number;
+  hasAudioLoaded: boolean;
+  whisperState: WhisperJobState;
   coverArtUrl: string;
   trackTitle: string;
   trackArtist: string;
   savedPresets: SavedStudioPreset[];
   onChangeVisualParams: (next: VisualParams) => void;
+  onStartWhisperTranscription: (modelId: WhisperModelId) => void;
+  onCancelWhisperTranscription: () => void;
+  onSeekAudio: (timeSec: number) => void;
   onSaveCustomPreset: (name: string) => void;
   onLoadCustomPreset: (preset: SavedStudioPreset) => void;
   onDeleteCustomPreset: (id: string) => void;
@@ -76,11 +120,18 @@ interface CustomizationStudioProps {
 export const CustomizationStudio: React.FC<CustomizationStudioProps> = ({
   section,
   visualParams,
+  highLevel,
+  currentTimeSec,
+  hasAudioLoaded,
+  whisperState,
   coverArtUrl,
   trackTitle,
   trackArtist,
   savedPresets,
   onChangeVisualParams,
+  onStartWhisperTranscription,
+  onCancelWhisperTranscription,
+  onSeekAudio,
   onSaveCustomPreset,
   onLoadCustomPreset,
   onDeleteCustomPreset,
@@ -94,6 +145,7 @@ export const CustomizationStudio: React.FC<CustomizationStudioProps> = ({
   const postFx: PostFxSettings = { ...DEFAULT_POST_FX, ...(visualParams.postFx || {}) };
   const overlayText: CustomOverlaySettings = { ...DEFAULT_OVERLAY_TEXT, ...(visualParams.overlayText || {}) };
   const backdrop: BackdropSettings = { ...DEFAULT_BACKDROP, ...(visualParams.backdrop || {}) };
+  const lyrics: LyricsSettings = { ...DEFAULT_LYRICS, ...(visualParams.lyrics || {}) };
 
   const updatePostFx = (patch: Partial<PostFxSettings>) => {
     onChangeVisualParams({
@@ -113,6 +165,13 @@ export const CustomizationStudio: React.FC<CustomizationStudioProps> = ({
     onChangeVisualParams({
       ...visualParams,
       backdrop: { ...backdrop, ...patch }
+    });
+  };
+
+  const updateLyrics = (patch: Partial<LyricsSettings>) => {
+    onChangeVisualParams({
+      ...visualParams,
+      lyrics: { ...lyrics, ...patch }
     });
   };
 
@@ -136,7 +195,65 @@ export const CustomizationStudio: React.FC<CustomizationStudioProps> = ({
     setTimeout(() => setJustSaved(false), 1600);
   };
 
+  const handleImportLyricsFile = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const parsed = parseLrcOrSrt(String(reader.result || ""));
+      if (parsed.length > 0) {
+        updateLyrics({ lines: parsed, enabled: true });
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+
+  const handleDownloadLyrics = (format: "lrc" | "srt") => {
+    if (lyrics.lines.length === 0) return;
+    const content = format === "lrc" ? exportLyricsToLrc(lyrics.lines) : exportLyricsToSrt(lyrics.lines);
+    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const safeTitle = (trackTitle || "timed_lyrics").replace(/[^a-z0-9_-]+/gi, "_");
+    a.download = `${safeTitle}.${format}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const updateLyricLine = (id: string, patch: Partial<TimedLyricLine>) => {
+    const updated = lyrics.lines.map((line) => (line.id === id ? { ...line, ...patch } : line));
+    updateLyrics({ lines: updated });
+  };
+
+  const removeLyricLine = (id: string) => {
+    updateLyrics({ lines: lyrics.lines.filter((line) => line.id !== id) });
+  };
+
+  const addManualLyricLine = () => {
+    const start = Number(currentTimeSec.toFixed(2));
+    const end = Number((start + 3.0).toFixed(2));
+    const newLine: TimedLyricLine = {
+      id: `man-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      start,
+      end,
+      text: "New timed lyric line..."
+    };
+    const nextLines = [...lyrics.lines, newLine].sort((a, b) => a.start - b.start);
+    updateLyrics({ lines: nextLines, enabled: true });
+  };
+
   if (section === "postfx") {
+    const strobeOn = Boolean(postFx.strobeEnabled);
+    const strobeIntensity = postFx.strobeIntensity ?? 0.65;
+    const strobeThreshold = postFx.strobeThreshold ?? 0.42;
+    const highNorm = Math.min(100, Math.max(0, highLevel));
+    const thresholdPct = Math.round(strobeThreshold * 100);
+    const isPeakFiring = strobeOn && highNorm >= thresholdPct;
+
     return (
       <div className="space-y-4">
         <div className="bg-[#101116] border border-[#1f2937] rounded-lg p-5">
@@ -156,30 +273,34 @@ export const CustomizationStudio: React.FC<CustomizationStudioProps> = ({
           {/* 1-Click FX Quick Profiles */}
           <div className="mb-5">
             <span className="block text-[10px] font-mono text-gray-400 uppercase mb-2">Quick FX Rack Profiles</span>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
               {[
                 {
                   name: "Clean Digital",
-                  fx: { scanlines: 0, grain: 0, vignette: 0.15, glitchShift: 0, beatZoom: 0.1, mirrorMode: "none" as MirrorSymmetryMode }
+                  fx: { scanlines: 0, grain: 0, vignette: 0.15, glitchShift: 0, beatZoom: 0.1, strobeEnabled: false, mirrorMode: "none" as MirrorSymmetryMode }
                 },
                 {
                   name: "1987 CCTV Tape",
-                  fx: { scanlines: 0.65, grain: 0.55, vignette: 0.72, glitchShift: 0.25, beatZoom: 0.15, mirrorMode: "none" as MirrorSymmetryMode }
+                  fx: { scanlines: 0.65, grain: 0.55, vignette: 0.72, glitchShift: 0.25, beatZoom: 0.15, strobeEnabled: false, mirrorMode: "none" as MirrorSymmetryMode }
                 },
                 {
                   name: "Corrupted VHS",
-                  fx: { scanlines: 0.8, grain: 0.85, vignette: 0.85, glitchShift: 0.8, beatZoom: 0.5, mirrorMode: "none" as MirrorSymmetryMode }
+                  fx: { scanlines: 0.8, grain: 0.85, vignette: 0.85, glitchShift: 0.8, beatZoom: 0.5, strobeEnabled: true, strobeIntensity: 0.55, strobeThreshold: 0.48, mirrorMode: "none" as MirrorSymmetryMode }
+                },
+                {
+                  name: "Club Strobe",
+                  fx: { scanlines: 0.1, grain: 0.05, vignette: 0.35, glitchShift: 0.1, beatZoom: 0.55, strobeEnabled: true, strobeIntensity: 0.85, strobeThreshold: 0.36, mirrorMode: "none" as MirrorSymmetryMode }
                 },
                 {
                   name: "Quad Mirror",
-                  fx: { scanlines: 0.2, grain: 0.15, vignette: 0.45, glitchShift: 0.15, beatZoom: 0.45, mirrorMode: "quad" as MirrorSymmetryMode }
+                  fx: { scanlines: 0.2, grain: 0.15, vignette: 0.45, glitchShift: 0.15, beatZoom: 0.45, strobeEnabled: false, mirrorMode: "quad" as MirrorSymmetryMode }
                 }
               ].map((profile) => (
                 <button
                   key={profile.name}
                   type="button"
                   onClick={() => updatePostFx(profile.fx)}
-                  className="px-2.5 py-2 rounded border border-gray-800 bg-black/40 hover:border-yellow-500/60 hover:text-yellow-400 text-[10px] font-mono text-gray-300 transition-colors cursor-pointer text-center"
+                  className="px-2 py-2 rounded border border-gray-800 bg-black/40 hover:border-yellow-500/60 hover:text-yellow-400 text-[10px] font-mono text-gray-300 transition-colors cursor-pointer text-center"
                 >
                   {profile.name}
                 </button>
@@ -187,7 +308,86 @@ export const CustomizationStudio: React.FC<CustomizationStudioProps> = ({
             </div>
           </div>
 
-          {/* FX Sliders */}
+          {/* Dedicated Global Strobe Effect Module (High-Frequency Peak Flash) */}
+          <div className={`mb-5 p-4 rounded-lg border transition-colors ${strobeOn ? "bg-yellow-950/15 border-yellow-500/50" : "bg-black/35 border-gray-800"}`}>
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+              <div>
+                <h4 className="text-xs font-mono font-bold text-gray-100 flex items-center gap-1.5">
+                  <Zap size={14} className={isPeakFiring ? "text-yellow-300" : "text-yellow-500"} />
+                  Global High-Frequency Strobe
+                </h4>
+                <p className="text-[10px] text-gray-400 mt-0.5">
+                  Flashes entire canvas brightness on high-frequency (<code className="text-cyan-400">highLevel</code>) audio peaks.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => updatePostFx({ strobeEnabled: !strobeOn })}
+                className={`px-3 py-1.5 rounded text-[11px] font-mono font-bold cursor-pointer transition-colors whitespace-nowrap ${
+                  strobeOn
+                    ? "bg-yellow-500 text-black hover:bg-yellow-400"
+                    : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+                }`}
+              >
+                {strobeOn ? "Strobe Active" : "Enable Strobe"}
+              </button>
+            </div>
+
+            {/* Live High-Freq Signal vs Threshold Meter */}
+            <div className="mb-3">
+              <div className="flex justify-between text-[10px] font-mono text-gray-400 mb-1 tabular-nums">
+                <span>Live High-Freq Signal: <strong className={isPeakFiring ? "text-yellow-300" : "text-cyan-400"}>{Math.round(highNorm)}%</strong></span>
+                <span>Trigger Peak: <strong className="text-yellow-500">{thresholdPct}%</strong></span>
+              </div>
+              <div className="relative h-2 w-full bg-gray-950 rounded overflow-hidden border border-gray-800">
+                <div
+                  style={{ width: `${highNorm}%` }}
+                  className={`h-full transition-all duration-75 ${isPeakFiring ? "bg-white" : "bg-cyan-400"}`}
+                />
+                <div
+                  style={{ left: `${thresholdPct}%` }}
+                  className="absolute top-0 bottom-0 w-0.5 bg-yellow-400"
+                  title={`Trigger Threshold: ${thresholdPct}%`}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <div className="flex justify-between text-[11px] font-mono mb-1 text-gray-300 tabular-nums">
+                  <span>Flash Intensity:</span>
+                  <span className="text-yellow-500 font-bold">{Math.round(strobeIntensity * 100)}%</span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  className="w-full accent-yellow-500 cursor-pointer h-1.5 bg-gray-800 rounded-lg appearance-none"
+                  value={strobeIntensity}
+                  onChange={(e) => updatePostFx({ strobeIntensity: parseFloat(e.target.value), strobeEnabled: true })}
+                />
+              </div>
+
+              <div>
+                <div className="flex justify-between text-[11px] font-mono mb-1 text-gray-300 tabular-nums">
+                  <span>High-Freq Peak Threshold:</span>
+                  <span className="text-yellow-500 font-bold">{thresholdPct}%</span>
+                </div>
+                <input
+                  type="range"
+                  min="0.15"
+                  max="0.85"
+                  step="0.02"
+                  className="w-full accent-yellow-500 cursor-pointer h-1.5 bg-gray-800 rounded-lg appearance-none"
+                  value={strobeThreshold}
+                  onChange={(e) => updatePostFx({ strobeThreshold: parseFloat(e.target.value) })}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Analog FX Sliders */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5">
             <div>
               <div className="flex justify-between text-[11px] font-mono mb-1 text-gray-300 tabular-nums">
@@ -311,6 +511,311 @@ export const CustomizationStudio: React.FC<CustomizationStudioProps> = ({
               </select>
             </div>
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (section === "lyrics") {
+    const isWhisperBusy =
+      whisperState.status === "resampling" ||
+      whisperState.status === "loading" ||
+      whisperState.status === "transcribing";
+    const syncTime = currentTimeSec + (lyrics.offsetSec ?? 0);
+
+    return (
+      <div className="space-y-4">
+        {/* Open Whisper On-Device Recognition Engine */}
+        <div className="bg-[#101116] border border-[#1f2937] rounded-lg p-5">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3 border-b border-gray-800 pb-3">
+            <h3 className="font-bold flex items-center gap-2 text-sm text-yellow-500 font-mono tracking-widest uppercase">
+              <Mic size={16} /> Open Whisper On-Device Timed Lyrics
+            </h3>
+            <button
+              type="button"
+              onClick={() => updateLyrics({ enabled: !lyrics.enabled })}
+              className={`px-3 py-1 rounded text-[10px] font-mono font-bold cursor-pointer transition-colors ${
+                lyrics.enabled ? "bg-yellow-500 text-black" : "bg-gray-800 text-gray-400"
+              }`}
+            >
+              {lyrics.enabled ? "Canvas Lyrics On" : "Canvas Lyrics Off"}
+            </button>
+          </div>
+
+          <p className="text-[11px] text-gray-400 leading-relaxed mb-4">
+            Runs <strong className="text-gray-200">Open Whisper</strong> directly on your device in a local Web Worker (WebGPU / WASM) with chunk timestamps. Once model weights cache on first run, transcription works completely offline when installed on device.
+          </p>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+            <div>
+              <label className="block text-[10px] font-mono text-gray-400 uppercase mb-1">Open Whisper Model</label>
+              <select
+                value={lyrics.modelId}
+                disabled={isWhisperBusy}
+                onChange={(e) => updateLyrics({ modelId: e.target.value as WhisperModelId })}
+                className="w-full bg-[#09090d] border border-gray-800 rounded px-2.5 py-2 text-xs font-mono text-cyan-400 focus:ring-1 focus:ring-yellow-500 focus:outline-none disabled:opacity-50"
+              >
+                <option value="onnx-community/whisper-tiny.en">Whisper Tiny (English · ~40 MB · Fast)</option>
+                <option value="onnx-community/whisper-tiny">Whisper Tiny (Multilingual · ~40 MB)</option>
+                <option value="onnx-community/whisper-base.en">Whisper Base (English · ~75 MB · Accurate)</option>
+              </select>
+            </div>
+
+            <div className="flex items-end gap-2">
+              {!isWhisperBusy ? (
+                <button
+                  type="button"
+                  disabled={!hasAudioLoaded}
+                  onClick={() => onStartWhisperTranscription(lyrics.modelId)}
+                  className="w-full px-3 py-2 rounded bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-mono font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                >
+                  <Mic size={14} /> {hasAudioLoaded ? "Transcribe Track Lyrics" : "Load Audio Track First"}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onCancelWhisperTranscription}
+                  className="w-full px-3 py-2 rounded bg-red-600/80 hover:bg-red-500 text-white font-mono font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                >
+                  <Square size={12} /> Cancel Whisper Job
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Whisper Live Progress / Error Box */}
+          {whisperState.status !== "idle" && (
+            <div
+              className={`mb-4 p-3 rounded border text-xs font-mono ${
+                whisperState.status === "error"
+                  ? "bg-red-950/30 border-red-500/40 text-red-300"
+                  : whisperState.status === "complete"
+                    ? "bg-emerald-950/25 border-emerald-500/40 text-emerald-300"
+                    : "bg-cyan-950/25 border-cyan-500/40 text-cyan-200"
+              }`}
+            >
+              <div className="flex justify-between items-center gap-2">
+                <span>{whisperState.message}</span>
+                {isWhisperBusy && <span className="tabular-nums font-bold">{whisperState.progress}%</span>}
+              </div>
+              {isWhisperBusy && (
+                <div className="mt-2 h-1.5 w-full bg-gray-900 rounded overflow-hidden">
+                  <div
+                    style={{ width: `${Math.max(8, whisperState.progress)}%` }}
+                    className="h-full bg-cyan-400 transition-all duration-200"
+                  />
+                </div>
+              )}
+              {whisperState.error && (
+                <p className="mt-1.5 text-[10px] text-red-200/90 font-sans leading-relaxed">
+                  {whisperState.error}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Canvas Lyric Appearance & Timing Sync Controls */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-gray-800">
+            <div>
+              <label className="block text-[10px] font-mono text-gray-400 uppercase mb-1">Canvas Lyric Style</label>
+              <select
+                value={lyrics.style}
+                onChange={(e) => updateLyrics({ style: e.target.value as LyricDisplayStyle })}
+                className="w-full bg-[#09090d] border border-gray-800 rounded px-2.5 py-1.5 text-xs font-mono text-gray-200 focus:ring-1 focus:ring-yellow-500 focus:outline-none"
+              >
+                <option value="karaoke">Karaoke Highlight Sweep</option>
+                <option value="subtitle">Cinematic Subtitle Bar</option>
+                <option value="crt">1980s CRT Closed Caption</option>
+                <option value="kinetic">Center Kinetic Display</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[10px] font-mono text-gray-400 uppercase mb-1">Vertical Position</label>
+              <select
+                value={lyrics.position}
+                onChange={(e) => updateLyrics({ position: e.target.value as LyricDisplayPosition })}
+                className="w-full bg-[#09090d] border border-gray-800 rounded px-2.5 py-1.5 text-xs font-mono text-gray-200 focus:ring-1 focus:ring-yellow-500 focus:outline-none"
+              >
+                <option value="bottom">Bottom Third</option>
+                <option value="center">Center Stage</option>
+                <option value="top">Top Third</option>
+              </select>
+            </div>
+
+            <div>
+              <div className="flex justify-between text-[11px] font-mono mb-1 text-gray-300 tabular-nums">
+                <span>Lyric Font Size:</span>
+                <span className="text-yellow-500 font-bold">{lyrics.fontSize} px</span>
+              </div>
+              <input
+                type="range"
+                min="18"
+                max="64"
+                step="2"
+                className="w-full accent-yellow-500 cursor-pointer h-1.5 bg-gray-800 rounded-lg appearance-none"
+                value={lyrics.fontSize}
+                onChange={(e) => updateLyrics({ fontSize: parseInt(e.target.value) })}
+              />
+            </div>
+
+            <div>
+              <div className="flex justify-between text-[11px] font-mono mb-1 text-gray-300 tabular-nums">
+                <span>Timing Sync Offset:</span>
+                <span className="text-yellow-500 font-bold">{lyrics.offsetSec >= 0 ? "+" : ""}{lyrics.offsetSec.toFixed(2)}s</span>
+              </div>
+              <input
+                type="range"
+                min="-2.0"
+                max="2.0"
+                step="0.05"
+                className="w-full accent-yellow-500 cursor-pointer h-1.5 bg-gray-800 rounded-lg appearance-none"
+                value={lyrics.offsetSec}
+                onChange={(e) => updateLyrics({ offsetSec: parseFloat(e.target.value) })}
+              />
+            </div>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-gray-800">
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="file"
+                id="importLyricsLrcSrt"
+                accept=".lrc,.srt,.txt"
+                className="hidden"
+                onChange={handleImportLyricsFile}
+              />
+              <label
+                htmlFor="importLyricsLrcSrt"
+                className="px-2.5 py-1.5 rounded border border-gray-700 bg-black/40 hover:border-gray-500 text-[10px] font-mono text-gray-300 flex items-center gap-1 cursor-pointer transition-colors"
+              >
+                <Upload size={11} /> Import .LRC / .SRT
+              </label>
+
+              <button
+                type="button"
+                disabled={lyrics.lines.length === 0}
+                onClick={() => handleDownloadLyrics("lrc")}
+                className="px-2.5 py-1.5 rounded border border-gray-700 bg-black/40 hover:border-gray-500 disabled:opacity-35 text-[10px] font-mono text-gray-300 flex items-center gap-1 cursor-pointer transition-colors"
+              >
+                <Download size={11} /> Export .LRC
+              </button>
+
+              <button
+                type="button"
+                disabled={lyrics.lines.length === 0}
+                onClick={() => handleDownloadLyrics("srt")}
+                className="px-2.5 py-1.5 rounded border border-gray-700 bg-black/40 hover:border-gray-500 disabled:opacity-35 text-[10px] font-mono text-gray-300 flex items-center gap-1 cursor-pointer transition-colors"
+              >
+                <Download size={11} /> Export .SRT
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => updateLyrics({ showNextLine: !lyrics.showNextLine })}
+              className="text-[10px] font-mono text-gray-400 hover:text-yellow-400 cursor-pointer"
+            >
+              Next-Line Preview: {lyrics.showNextLine ? "On" : "Off"}
+            </button>
+          </div>
+        </div>
+
+        {/* Interactive Timed Lyrics Timeline Editor */}
+        <div className="bg-[#101116] border border-[#1f2937] rounded-lg p-5">
+          <div className="flex items-center justify-between gap-2 mb-3 border-b border-gray-800 pb-2">
+            <h4 className="text-xs font-mono font-bold text-gray-300 uppercase tracking-wider">
+              Timed Lyrics Timeline ({lyrics.lines.length} lines)
+            </h4>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={addManualLyricLine}
+                className="px-2.5 py-1 rounded bg-yellow-500/15 border border-yellow-500/40 text-yellow-400 hover:bg-yellow-500/25 text-[10px] font-mono font-bold flex items-center gap-1 cursor-pointer"
+              >
+                <Plus size={11} /> Add Line at {formatLrcTime(currentTimeSec)}
+              </button>
+              {lyrics.lines.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => updateLyrics({ lines: [] })}
+                  className="text-[10px] font-mono text-red-400 hover:text-red-300 cursor-pointer"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
+
+          {lyrics.lines.length === 0 ? (
+            <div className="p-6 rounded border border-dashed border-gray-800 bg-black/30 text-center">
+              <p className="text-xs font-mono text-gray-400">No timed lyrics loaded yet</p>
+              <p className="text-[10px] text-gray-500 mt-1">
+                Click &quot;Transcribe Track Lyrics&quot; above to run Open Whisper locally on your track, import an .LRC/.SRT file, or add lines manually.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+              {lyrics.lines.map((line) => {
+                const isActive = syncTime >= line.start && syncTime <= line.end;
+                return (
+                  <div
+                    key={line.id}
+                    className={`p-2 rounded border flex flex-col sm:flex-row sm:items-center gap-2 transition-colors ${
+                      isActive
+                        ? "bg-cyan-950/35 border-cyan-500/60"
+                        : "bg-black/35 border-gray-800/90"
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => onSeekAudio(line.start)}
+                        title="Jump audio playhead here"
+                        className="px-1.5 py-1 rounded bg-gray-900 border border-gray-700 hover:border-cyan-400 text-[10px] font-mono text-cyan-300 tabular-nums cursor-pointer"
+                      >
+                        {formatLrcTime(line.start)}
+                      </button>
+                      <span className="text-gray-600 text-[10px]">→</span>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        aria-label="End time in seconds"
+                        value={Number(line.end.toFixed(2))}
+                        onChange={(e) => updateLyricLine(line.id, { end: Math.max(line.start + 0.2, parseFloat(e.target.value) || line.start + 1) })}
+                        className="w-16 bg-gray-950 border border-gray-800 rounded px-1.5 py-1 text-[10px] font-mono text-gray-300 tabular-nums focus:outline-none focus:border-yellow-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => updateLyricLine(line.id, { start: Number(currentTimeSec.toFixed(2)), end: Math.max(Number((currentTimeSec + 2.5).toFixed(2)), line.end) })}
+                        title="Stamp current audio playhead as start time"
+                        className="p-1 rounded bg-gray-900 border border-gray-800 text-gray-400 hover:text-yellow-400 cursor-pointer"
+                      >
+                        <Clock size={11} />
+                      </button>
+                    </div>
+
+                    <input
+                      type="text"
+                      value={line.text}
+                      onChange={(e) => updateLyricLine(line.id, { text: e.target.value })}
+                      className="flex-1 bg-transparent border border-transparent focus:border-gray-700 focus:bg-black/60 rounded px-2 py-1 text-xs font-mono text-gray-100 focus:outline-none"
+                    />
+
+                    <button
+                      type="button"
+                      onClick={() => removeLyricLine(line.id)}
+                      className="p-1 text-red-400/80 hover:text-red-300 cursor-pointer self-end sm:self-center"
+                      title="Delete lyric line"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -573,7 +1078,7 @@ export const CustomizationStudio: React.FC<CustomizationStudioProps> = ({
         </div>
 
         <p className="text-[11px] text-gray-400 leading-relaxed mb-4">
-          Save your current combination of procedural preset, background layers, Post-FX optics, colors, VST rack, and studio skin into your local vault — or export and share entire preset packs as JSON.
+          Save your current combination of procedural preset, background layers, Post-FX optics, Strobe, colors, VST rack, and studio skin into your local vault — or export and share entire preset packs as JSON.
         </p>
 
         {/* Save new preset row */}

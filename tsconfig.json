@@ -22,5 +22,16 @@
     },
     "allowImportingTsExtensions": true,
     "noEmit": true
-  }
+  },
+  "exclude": [
+    "node_modules",
+    "dist",
+    "env",
+    "pinokio.js",
+    "install.js",
+    "start.js",
+    "torch.js",
+    "update.js",
+    "reset.js"
+  ]
 }

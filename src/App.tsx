@@ -13,7 +13,8 @@ import {
   BatchAudioItem,
   LayoutSkin,
   StudioProjectState,
-  SavedStudioPreset
+  SavedStudioPreset,
+  WhisperModelId
 } from "./types";
 import { DEFAULT_JS_SCRIPT, DEFAULT_MYSPACE_HTML, generatePythonScript } from "./scriptTemplates";
 import { StudioAudioEngine, createReverbImpulseResponse, makeWarmTubeCurve } from "./audioEngine";
@@ -25,8 +26,20 @@ import {
   CustomizationStudio,
   DEFAULT_POST_FX,
   DEFAULT_OVERLAY_TEXT,
-  DEFAULT_BACKDROP
+  DEFAULT_BACKDROP,
+  DEFAULT_LYRICS,
+  WhisperJobState
 } from "./components/CustomizationStudio";
+import { PWAInstallButton, OfflineIndicator } from "./components/PWAInstallButton";
+import { PinokioBindingsPanel } from "./components/PinokioBindingsPanel";
+import { resampleAudioBufferTo16kMono } from "./utils/lyricsCodec";
+import {
+  PinokioBridgeHealth,
+  probePinokioBridge,
+  transcribeViaPinokioPython,
+  renderViaPinokioPython,
+  triggerPinokioFrontendBuild
+} from "./utils/pinokioBridge";
 import { audioBufferToWav } from "./utils/waveEncoder";
 import { audioBufferToMp3 } from "./utils/mp3Encoder";
 import { motion, AnimatePresence } from "motion/react";
@@ -57,7 +70,8 @@ import {
   Radio,
   Sliders,
   Image as ImageIcon,
-  Shuffle
+  Shuffle,
+  Mic
 } from "lucide-react";
 
 const PRESET_VAULT_STORAGE_KEY = "soundscape_custom_presets_v1";
@@ -79,7 +93,8 @@ const DEFAULT_VISUAL_PARAMS: VisualParams = {
   layerOpacity: 0.45,
   postFx: DEFAULT_POST_FX,
   overlayText: DEFAULT_OVERLAY_TEXT,
-  backdrop: DEFAULT_BACKDROP
+  backdrop: DEFAULT_BACKDROP,
+  lyrics: DEFAULT_LYRICS
 };
 
 const DEFAULT_VST_SETTINGS: VstSettings = {
@@ -114,10 +129,20 @@ const DEFAULT_METADATA: AudioMetadata = {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<"dashboard" | "designer" | "metadata" | "renderer">("dashboard");
-  const [designerSubTab, setDesignerSubTab] = useState<"presets" | "postfx" | "branding" | "vault">("presets");
+  const [designerSubTab, setDesignerSubTab] = useState<"presets" | "postfx" | "branding" | "lyrics" | "vault">("presets");
   const [presetCategory, setPresetCategory] = useState<"all" | "horror" | "retro" | "kinetic">("all");
   const [demoSignalActive, setDemoSignalActive] = useState<boolean>(true);
   const [studioNotice, setStudioNotice] = useState<string | null>(null);
+  const [whisperState, setWhisperState] = useState<WhisperJobState>({
+    status: "idle",
+    progress: 0,
+    message: ""
+  });
+  const [pinokioBridgeUrl, setPinokioBridgeUrl] = useState<string>("");
+  const [pinokioHealth, setPinokioHealth] = useState<PinokioBridgeHealth | null>(null);
+  const [isProbingPinokio, setIsProbingPinokio] = useState<boolean>(false);
+  const [isRenderingPython, setIsRenderingPython] = useState<boolean>(false);
+  const [isBuildingPinokioFrontend, setIsBuildingPinokioFrontend] = useState<boolean>(false);
   const [savedPresets, setSavedPresets] = useState<SavedStudioPreset[]>(() => {
     try {
       const raw = localStorage.getItem(PRESET_VAULT_STORAGE_KEY);
@@ -185,6 +210,24 @@ export default function App() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const decodedBufferRef = useRef<AudioBuffer | null>(null);
+  const whisperWorkerRef = useRef<Worker | null>(null);
+
+  // Auto-detect Pinokio local Python bridge on mount & clean up Whisper worker on unmount
+  useEffect(() => {
+    let active = true;
+    probePinokioBridge("").then((info) => {
+      if (active && info) {
+        setPinokioHealth(info);
+      }
+    });
+    return () => {
+      active = false;
+      if (whisperWorkerRef.current) {
+        whisperWorkerRef.current.terminate();
+        whisperWorkerRef.current = null;
+      }
+    };
+  }, []);
 
   // Cross-fading Preset Transition References
   const prevVisualParamsRef = useRef<VisualParams | null>(null);
@@ -339,13 +382,257 @@ export default function App() {
       ...preset.visualParams,
       postFx: { ...DEFAULT_POST_FX, ...(preset.visualParams.postFx || {}) },
       overlayText: { ...DEFAULT_OVERLAY_TEXT, ...(preset.visualParams.overlayText || {}) },
-      backdrop: { ...DEFAULT_BACKDROP, ...(preset.visualParams.backdrop || {}) }
+      backdrop: { ...DEFAULT_BACKDROP, ...(preset.visualParams.backdrop || {}) },
+      lyrics: { ...DEFAULT_LYRICS, ...(preset.visualParams.lyrics || {}) }
     });
     setVstSettings({ ...DEFAULT_VST_SETTINGS, ...preset.vstSettings });
     setResolution(preset.resolution || CanvasResolution.YOUTUBE_16_9);
     if (preset.skinId) setSkinId(preset.skinId);
     audioEngineRef.current.applySettings(preset.vstSettings);
     showTransientNotice(`Loaded rig "${preset.name}"`);
+  };
+
+  const handleSeekAudio = (timeSec: number) => {
+    const safeSec = Math.max(0, timeSec);
+    if (audioRef.current) {
+      audioRef.current.currentTime = safeSec;
+      const dur = audioRef.current.duration || audioDuration;
+      if (dur && Number.isFinite(dur) && dur > 0) {
+        setAudioProgress(Math.min(100, (safeSec / dur) * 100));
+      }
+    }
+  };
+
+  const handleCancelWhisperTranscription = () => {
+    if (whisperWorkerRef.current) {
+      whisperWorkerRef.current.terminate();
+      whisperWorkerRef.current = null;
+    }
+    setWhisperState({
+      status: "idle",
+      progress: 0,
+      message: "Transcription canceled."
+    });
+  };
+
+  const handleStartWhisperTranscription = async (modelId: WhisperModelId) => {
+    if (!currentAudio) {
+      setWhisperState({
+        status: "error",
+        progress: 0,
+        message: "Load an audio track first.",
+        error: "No audio file loaded."
+      });
+      return;
+    }
+
+    // Prefer GPU-accelerated native openai-whisper when running inside Pinokio Python bridge
+    if (pinokioHealth?.whisper_available) {
+      try {
+        setWhisperState({
+          status: "transcribing",
+          progress: 35,
+          message: `Running Pinokio Python Whisper (${pinokioHealth.device.toUpperCase()})...`
+        });
+        const resp = await fetch(currentAudio.url);
+        const blob = await resp.blob();
+        const result = await transcribeViaPinokioPython(
+          blob,
+          currentAudio.name,
+          modelId,
+          pinokioBridgeUrl
+        );
+        setVisualParams((prev) => ({
+          ...prev,
+          lyrics: {
+            ...DEFAULT_LYRICS,
+            ...(prev.lyrics || {}),
+            enabled: true,
+            lines: result.lines,
+            modelId
+          }
+        }));
+        setWhisperState({
+          status: "complete",
+          progress: 100,
+          message: `Transcribed ${result.lines.length} timed lines via Pinokio (${result.device.toUpperCase()}).`
+        });
+        showTransientNotice(`Whisper transcribed ${result.lines.length} lyric lines`);
+        return;
+      } catch (err) {
+        console.warn("Pinokio Python Whisper fallback to on-device browser worker:", err);
+      }
+    }
+
+    // On-device browser Open Whisper Web Worker (@huggingface/transformers + Cache API)
+    try {
+      setWhisperState({
+        status: "resampling",
+        progress: 10,
+        message: "Decoding & resampling audio to 16 kHz mono PCM..."
+      });
+
+      let audioBuffer = decodedBufferRef.current;
+      if (!audioBuffer) {
+        const resp = await fetch(currentAudio.url);
+        const arrBuf = await resp.arrayBuffer();
+        const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+        const tempCtx = new AudioCtx();
+        try {
+          audioBuffer = await tempCtx.decodeAudioData(arrBuf.slice(0));
+          decodedBufferRef.current = audioBuffer;
+        } finally {
+          await tempCtx.close().catch(() => {});
+        }
+      }
+
+      const pcm16k = await resampleAudioBufferTo16kMono(audioBuffer);
+
+      if (!whisperWorkerRef.current) {
+        whisperWorkerRef.current = new Worker(
+          new URL("./workers/whisperWorker.ts", import.meta.url),
+          { type: "module" }
+        );
+      }
+
+      const worker = whisperWorkerRef.current;
+      worker.onmessage = (event: MessageEvent) => {
+        const data = event.data;
+        if (!data || !data.type) return;
+
+        if (data.type === "loading") {
+          setWhisperState({
+            status: "loading",
+            progress: Math.max(15, Math.min(85, Math.round(data.progress || 25))),
+            message: data.message || "Caching Open Whisper weights on device..."
+          });
+        } else if (data.type === "transcribing") {
+          setWhisperState({
+            status: "transcribing",
+            progress: Math.max(60, Math.min(95, Math.round(data.progress || 75))),
+            message: data.message || "Recognizing timed lyrics with Open Whisper..."
+          });
+        } else if (data.type === "complete") {
+          const lines = Array.isArray(data.lines) ? data.lines : [];
+          setVisualParams((prev) => ({
+            ...prev,
+            lyrics: {
+              ...DEFAULT_LYRICS,
+              ...(prev.lyrics || {}),
+              enabled: true,
+              lines,
+              modelId
+            }
+          }));
+          setWhisperState({
+            status: "complete",
+            progress: 100,
+            message: `Transcribed ${lines.length} properly timed lyric lines on device.`
+          });
+          showTransientNotice(`Open Whisper generated ${lines.length} timed lyric lines`);
+        } else if (data.type === "error") {
+          setWhisperState({
+            status: "error",
+            progress: 0,
+            message: "Open Whisper transcription failed.",
+            error: data.error || "Unknown worker error"
+          });
+        }
+      };
+
+      worker.onerror = (err) => {
+        setWhisperState({
+          status: "error",
+          progress: 0,
+          message: "Open Whisper worker encountered a runtime error.",
+          error: err.message || "Worker error"
+        });
+      };
+
+      setWhisperState({
+        status: "loading",
+        progress: 20,
+        message: "Loading on-device Open Whisper model..."
+      });
+
+      worker.postMessage(
+        {
+          type: "transcribe",
+          audio: pcm16k,
+          modelId,
+          duration: audioBuffer.duration
+        },
+        [pcm16k.buffer]
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unable to prepare audio for Whisper.";
+      setWhisperState({
+        status: "error",
+        progress: 0,
+        message: msg,
+        error: msg
+      });
+    }
+  };
+
+  const handleProbePinokioBridge = async () => {
+    setIsProbingPinokio(true);
+    try {
+      const health = await probePinokioBridge(pinokioBridgeUrl);
+      setPinokioHealth(health);
+      if (health) {
+        showTransientNotice(`Connected to Pinokio Python (${health.device.toUpperCase()})`);
+      } else {
+        showTransientNotice("No local Pinokio Python bridge detected");
+      }
+    } finally {
+      setIsProbingPinokio(false);
+    }
+  };
+
+  const handleRenderViaPinokioPython = async () => {
+    if (!currentAudio || !pinokioHealth) return;
+    setIsRenderingPython(true);
+    try {
+      const resp = await fetch(currentAudio.url);
+      const blob = await resp.blob();
+      const mp4Blob = await renderViaPinokioPython(
+        blob,
+        currentAudio.name,
+        visualParams,
+        vstSettings,
+        resolution,
+        exportFps,
+        Boolean(visualParams.lyrics?.enabled && (visualParams.lyrics?.lines?.length || 0) === 0),
+        pinokioBridgeUrl
+      );
+      if (compiledVideoUrl) {
+        URL.revokeObjectURL(compiledVideoUrl);
+      }
+      const nextUrl = URL.createObjectURL(mp4Blob);
+      setCompiledVideoUrl(nextUrl);
+      setCompiledVideoName(`${(metadata.title || "soundscape").replace(/[^a-z0-9_-]/gi, "_")}_pinokio.mp4`);
+      showTransientNotice("Pinokio Python MP4 render complete!");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Pinokio render failed.";
+      setAudioError(`Pinokio Python Render Error: ${msg}`);
+    } finally {
+      setIsRenderingPython(false);
+    }
+  };
+
+  const handleBuildPinokioFrontend = async () => {
+    if (!pinokioHealth) return;
+    setIsBuildingPinokioFrontend(true);
+    try {
+      const res = await triggerPinokioFrontendBuild(false, pinokioBridgeUrl);
+      showTransientNotice(res.ok ? "Vite dist/ built via Python bindings!" : "Frontend build finished");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Frontend build failed.";
+      setAudioError(`Python Build Error: ${msg}`);
+    } finally {
+      setIsBuildingPinokioFrontend(false);
+    }
   };
 
   const handleDeleteCustomPreset = (id: string) => {
@@ -659,7 +946,8 @@ export default function App() {
             canvas.height = targetH;
           }
 
-          // Evaluate real-time frequency band levels for the physical bouncing LED meters
+          // Evaluate real-time frequency band levels for the physical bouncing LED meters & Strobe FX
+          let computedHighLevel = 0;
           if (audioEngineRef.current.ctx || usingDemoSignal) {
             const lowRange = freqData.slice(0, 8);
             const midRange = freqData.slice(12, 48);
@@ -669,9 +957,10 @@ export default function App() {
             const mSum = midRange.reduce((a, b) => a + b, 0) / (midRange.length || 1);
             const hSum = highRange.reduce((a, b) => a + b, 0) / (highRange.length || 1);
 
+            computedHighLevel = (hSum / 255) * 100;
             setBassLevel((bSum / 255) * 100);
             setMidLevel((mSum / 255) * 100);
-            setHighLevel((hSum / 255) * 100);
+            setHighLevel(computedHighLevel);
           } else {
             setBassLevel(0); setMidLevel(0); setHighLevel(0);
           }
@@ -690,6 +979,8 @@ export default function App() {
             }
           }
 
+          const playbackTimeSec = audioRef.current ? audioRef.current.currentTime : 0;
+
           // Draw procedural visual canvas structures
           drawMainVisuals({
             ctx,
@@ -700,7 +991,9 @@ export default function App() {
             time: timestamp,
             params: visualParams,
             prevParams,
-            progress
+            progress,
+            highLevel: computedHighLevel,
+            currentTime: playbackTimeSec
           });
 
           // == ADVANCED VIDEO EXPORT VISUALIZATION OVERLAYS ==
@@ -1848,6 +2141,8 @@ export default function App() {
                 ))}
               </select>
             </div>
+
+            <PWAInstallButton />
           </div>
 
         </div>
@@ -2214,11 +2509,12 @@ export default function App() {
                   className="space-y-4"
                 >
                   {/* Designer Sub-Navigation Bar */}
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 bg-[#0d0e13] border border-[#1f2937] p-1.5 rounded-lg">
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5 bg-[#0d0e13] border border-[#1f2937] p-1.5 rounded-lg">
                     {[
                       { id: "presets" as const, label: "Presets & Layers", icon: Tv },
-                      { id: "postfx" as const, label: "Post-FX & Optics", icon: Sliders },
+                      { id: "postfx" as const, label: "Post-FX & Strobe", icon: Sliders },
                       { id: "branding" as const, label: "Backdrop & Text", icon: ImageIcon },
+                      { id: "lyrics" as const, label: "Lyrics (Whisper)", icon: Mic },
                       { id: "vault" as const, label: `Vault (${savedPresets.length})`, icon: Save }
                     ].map((sub) => {
                       const SubIcon = sub.icon;
@@ -2244,11 +2540,18 @@ export default function App() {
                     <CustomizationStudio
                       section={designerSubTab}
                       visualParams={visualParams}
+                      highLevel={highLevel}
+                      currentTimeSec={audioRef.current ? audioRef.current.currentTime : (audioProgress / 100) * audioDuration}
+                      hasAudioLoaded={Boolean(currentAudio)}
+                      whisperState={whisperState}
                       coverArtUrl={metadata.coverArtUrl}
                       trackTitle={metadata.title}
                       trackArtist={metadata.artist}
                       savedPresets={savedPresets}
                       onChangeVisualParams={handleVisualParamsChange}
+                      onStartWhisperTranscription={handleStartWhisperTranscription}
+                      onCancelWhisperTranscription={handleCancelWhisperTranscription}
+                      onSeekAudio={handleSeekAudio}
                       onSaveCustomPreset={handleSaveCustomPreset}
                       onLoadCustomPreset={handleLoadCustomPreset}
                       onDeleteCustomPreset={handleDeleteCustomPreset}
@@ -3093,19 +3396,20 @@ export default function App() {
                         </button>
                       </div>
 
-                      {/* Download python 3 locally running rendering code using OpenCV and ffmpeg */}
-                      <div className="p-4 bg-black/40 border border-[#1f2937] rounded-lg">
-                        <span className="text-xs font-mono font-bold text-amber-500 block uppercase mb-1">🐍 EXPORT LOCAL PYTHON RENDERER</span>
-                        <p className="text-[11px] text-gray-400 leading-relaxed mb-4">
-                          Generate representing python3 code to render pixel-perfect high-definition visual videos locally, compatible with Windows, macOS, and Linux. No size limits!
-                        </p>
-                        <button
-                          onClick={triggerPythonScriptDownload}
-                          className="w-full py-2 bg-amber-600 hover:bg-amber-500 text-white text-xs font-mono font-bold rounded flex items-center justify-center gap-2 transition-colors cursor-pointer"
-                        >
-                          <Code size={14} /> DOWNLOAD PYTHON RENDER CORE
-                        </button>
-                      </div>
+                      {/* Pinokio App Builder & Python Bindings Panel */}
+                      <PinokioBindingsPanel
+                        bridgeUrl={pinokioBridgeUrl}
+                        bridgeHealth={pinokioHealth}
+                        isProbingBridge={isProbingPinokio}
+                        isRenderingPython={isRenderingPython}
+                        isBuildingFrontend={isBuildingPinokioFrontend}
+                        hasAudioLoaded={Boolean(currentAudio)}
+                        onChangeBridgeUrl={setPinokioBridgeUrl}
+                        onProbeBridge={handleProbePinokioBridge}
+                        onRenderViaPython={handleRenderViaPinokioPython}
+                        onBuildFrontendViaPython={handleBuildPinokioFrontend}
+                        onDownloadLegacyScript={triggerPythonScriptDownload}
+                      />
 
                     </div>
                   </div>
@@ -3119,6 +3423,7 @@ export default function App() {
         </div>
 
       </main>
+      <OfflineIndicator />
     </div>
   );
 }

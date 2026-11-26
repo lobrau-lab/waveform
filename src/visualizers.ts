@@ -15,6 +15,8 @@ interface DrawOptions {
   params: VisualParams;
   prevParams?: VisualParams | null;
   progress?: number;
+  highLevel?: number;     // 0 - 100 real-time high-frequency band signal
+  currentTime?: number;   // audio playhead position in seconds for timed lyrics
 }
 
 // Stored compiled user functions to avoid eval overhead on every frame
@@ -96,6 +98,11 @@ let cachedBackdropUrl = "";
 let cachedBackdropImg: HTMLImageElement | null = null;
 let cachedBackdropLoaded = false;
 let scratchCanvas: HTMLCanvasElement | null = null;
+
+// Strobe peak-detector envelope state (persists across animation frames)
+let strobeEnvelope = 0;
+let lastStrobeFrameTime = 0;
+let prevHighSignal = 0;
 
 function getBackdropImage(url: string): HTMLImageElement | null {
   if (!url) {
@@ -409,6 +416,182 @@ export function drawMainVisuals(options: DrawOptions) {
     }
 
     ctx.restore();
+  }
+
+  // 6. Global High-Frequency Strobe Flash Effect (triggered by highLevel signal peaks)
+  if (postFx?.strobeEnabled && (postFx.strobeIntensity ?? 0) > 0) {
+    const dt = lastStrobeFrameTime > 0 ? Math.min(80, Math.max(4, time - lastStrobeFrameTime)) : 16;
+    lastStrobeFrameTime = time;
+
+    // Derive normalized 0..1 high-frequency energy from explicit highLevel (0-100) or freqData[64..128]
+    let highNorm = 0;
+    if (typeof options.highLevel === "number") {
+      highNorm = Math.min(1, Math.max(0, options.highLevel / 100));
+    } else {
+      let sum = 0;
+      const startBin = 64;
+      const endBin = Math.min(128, freqData.length);
+      for (let i = startBin; i < endBin; i++) sum += freqData[i] || 0;
+      highNorm = (sum / Math.max(1, endBin - startBin)) / 255;
+    }
+
+    const threshold = postFx.strobeThreshold ?? 0.42;
+    const isPeak = highNorm >= threshold && (highNorm >= prevHighSignal + 0.025 || highNorm >= threshold + 0.14);
+    prevHighSignal = highNorm;
+
+    if (isPeak) {
+      const overshoot = Math.min(1, (highNorm - threshold) / Math.max(0.12, 1 - threshold));
+      strobeEnvelope = Math.max(strobeEnvelope, 0.55 + overshoot * 0.45);
+    } else {
+      // Crisp exponential flash decay (~110ms)
+      strobeEnvelope *= Math.exp(-dt / 95);
+      if (strobeEnvelope < 0.01) strobeEnvelope = 0;
+    }
+
+    if (strobeEnvelope > 0.01) {
+      const intensity = Math.min(1, Math.max(0, postFx.strobeIntensity ?? 0.65));
+      const flashAlpha = Math.min(0.92, strobeEnvelope * intensity * 0.92);
+      ctx.save();
+      // Pass 1: Screen-blend global brightness lift across the entire canvas
+      ctx.globalCompositeOperation = "screen";
+      ctx.fillStyle = `rgba(255, 255, 255, ${flashAlpha})`;
+      ctx.fillRect(0, 0, width, height);
+      // Pass 2: Subtle high-intensity punch wash tinted slightly by primary color
+      const [br, bg, bb] = hexToRgb(params.baseColor, [255, 255, 255]);
+      ctx.globalCompositeOperation = "lighter";
+      ctx.fillStyle = `rgba(${Math.round((255 + br) * 0.5)}, ${Math.round((255 + bg) * 0.5)}, ${Math.round((255 + bb) * 0.5)}, ${flashAlpha * 0.35})`;
+      ctx.fillRect(0, 0, width, height);
+      ctx.restore();
+    }
+  } else {
+    strobeEnvelope = 0;
+  }
+
+  // 7. Properly Timed Open Whisper Lyrics Renderer
+  const lyrics = params.lyrics;
+  if (lyrics && lyrics.enabled && lyrics.lines.length > 0 && typeof options.currentTime === "number") {
+    const syncTime = options.currentTime + (lyrics.offsetSec ?? 0);
+    let activeIdx = -1;
+    for (let i = 0; i < lyrics.lines.length; i++) {
+      const line = lyrics.lines[i];
+      if (syncTime >= line.start && syncTime <= line.end) {
+        activeIdx = i;
+        break;
+      }
+    }
+
+    if (activeIdx !== -1) {
+      const activeLine = lyrics.lines[activeIdx];
+      const nextLine = lyrics.showNextLine ? lyrics.lines[activeIdx + 1] : null;
+      const lineDuration = Math.max(0.25, activeLine.end - activeLine.start);
+      const lineProgress = Math.min(1, Math.max(0, (syncTime - activeLine.start) / lineDuration));
+
+      // Smooth fade in/out envelope near line boundaries
+      const fadeIn = Math.min(1, (syncTime - activeLine.start) / 0.16);
+      const fadeOut = Math.min(1, (activeLine.end - syncTime) / 0.18);
+      const alphaEnv = Math.min(1, Math.max(0, Math.min(fadeIn, fadeOut)));
+
+      const scaleFactor = width / 1280;
+      const fontSize = Math.max(14, Math.round((lyrics.fontSize || 34) * scaleFactor));
+      const nextSize = Math.max(11, Math.round(fontSize * 0.56));
+      const maxTextWidth = width * 0.86;
+
+      let anchorY = height * 0.85;
+      if (lyrics.position === "top") anchorY = height * 0.14;
+      if (lyrics.position === "center") anchorY = height * 0.52;
+
+      ctx.save();
+      ctx.globalAlpha = alphaEnv;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+
+      const textStr = activeLine.text.trim();
+      const baseColor = params.baseColor || "#22d3ee";
+      const secColor = params.secondaryColor || "#eab308";
+
+      if (lyrics.style === "crt") {
+        // 1980s CRT Closed Caption style
+        ctx.font = `bold ${fontSize}px 'Courier New', monospace`;
+        const measured = Math.min(maxTextWidth, ctx.measureText(textStr).width);
+        const boxPadX = 18 * scaleFactor;
+        const boxPadY = 10 * scaleFactor;
+        ctx.fillStyle = "rgba(4, 8, 6, 0.84)";
+        ctx.fillRect(width / 2 - measured / 2 - boxPadX, anchorY - fontSize * 0.65 - boxPadY, measured + boxPadX * 2, fontSize * 1.3 + boxPadY * 2);
+        ctx.strokeStyle = `${baseColor}70`;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(width / 2 - measured / 2 - boxPadX, anchorY - fontSize * 0.65 - boxPadY, measured + boxPadX * 2, fontSize * 1.3 + boxPadY * 2);
+        ctx.shadowColor = baseColor;
+        ctx.shadowBlur = 8;
+        ctx.fillStyle = "#eaffef";
+        ctx.fillText(textStr, width / 2, anchorY, maxTextWidth);
+      } else if (lyrics.style === "karaoke") {
+        // Progressive Karaoke Fill Sweep
+        ctx.font = `800 ${fontSize}px 'Plus Jakarta Sans', 'Outfit', sans-serif`;
+        const textWidth = Math.min(maxTextWidth, ctx.measureText(textStr).width);
+        const boxPadX = 24 * scaleFactor;
+        const boxPadY = 12 * scaleFactor;
+
+        // Subtle contrast scrim behind lyrics
+        ctx.fillStyle = "rgba(6, 7, 11, 0.58)";
+        ctx.beginPath();
+        ctx.roundRect(width / 2 - textWidth / 2 - boxPadX, anchorY - fontSize * 0.68 - boxPadY, textWidth + boxPadX * 2, fontSize * 1.36 + boxPadY * 2, 10);
+        ctx.fill();
+
+        // Unsung base text
+        ctx.fillStyle = "rgba(255, 255, 255, 0.36)";
+        ctx.fillText(textStr, width / 2, anchorY, maxTextWidth);
+
+        // Sung progressive highlight clip
+        ctx.save();
+        const startX = width / 2 - textWidth / 2;
+        ctx.beginPath();
+        ctx.rect(startX - 4, anchorY - fontSize, textWidth * lineProgress + 8, fontSize * 2);
+        ctx.clip();
+        ctx.shadowColor = baseColor;
+        ctx.shadowBlur = 14;
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(textStr, width / 2, anchorY, maxTextWidth);
+        ctx.restore();
+      } else if (lyrics.style === "kinetic") {
+        // Large Audio-Reactive Kinetic Center Display
+        const kineticScale = 1 + bassVal * 0.08 * sens;
+        const kFont = Math.round(fontSize * 1.15 * kineticScale);
+        ctx.font = `900 ${kFont}px 'Outfit', 'Plus Jakarta Sans', sans-serif`;
+        ctx.shadowColor = baseColor;
+        ctx.shadowBlur = 18 + bassVal * 22 * sens;
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(textStr, width / 2, anchorY, maxTextWidth);
+        // Subtle underline progress bar
+        const barW = Math.min(maxTextWidth * 0.5, 260 * scaleFactor);
+        ctx.fillStyle = "rgba(255,255,255,0.2)";
+        ctx.fillRect(width / 2 - barW / 2, anchorY + kFont * 0.72, barW, 3);
+        ctx.fillStyle = secColor;
+        ctx.fillRect(width / 2 - barW / 2, anchorY + kFont * 0.72, barW * lineProgress, 3);
+      } else {
+        // Cinematic Subtitle Bar
+        ctx.font = `700 ${fontSize}px 'Plus Jakarta Sans', sans-serif`;
+        const measured = Math.min(maxTextWidth, ctx.measureText(textStr).width);
+        const padX = 22 * scaleFactor;
+        const padY = 10 * scaleFactor;
+        ctx.fillStyle = "rgba(0, 0, 0, 0.68)";
+        ctx.beginPath();
+        ctx.roundRect(width / 2 - measured / 2 - padX, anchorY - fontSize * 0.65 - padY, measured + padX * 2, fontSize * 1.3 + padY * 2, 8);
+        ctx.fill();
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(textStr, width / 2, anchorY, maxTextWidth);
+      }
+
+      // Upcoming next-line preview
+      if (nextLine && nextLine.text.trim()) {
+        ctx.shadowBlur = 0;
+        ctx.globalAlpha = alphaEnv * 0.52;
+        ctx.font = `500 ${nextSize}px 'JetBrains Mono', monospace`;
+        ctx.fillStyle = "#cbd5e1";
+        ctx.fillText(nextLine.text.trim(), width / 2, anchorY + fontSize * 1.15, maxTextWidth);
+      }
+
+      ctx.restore();
+    }
   }
 }
 

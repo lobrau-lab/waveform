@@ -115,7 +115,7 @@ using OpenCV (cv2) and numpy.
 Compatible with Windows, macOS, and Linux.
 
 Prerequisites:
-    pip install numpy opencv-python soundfile librosa matplotlib
+    pip install numpy opencv-python soundfile librosa matplotlib openai-whisper
 """
 
 import os
@@ -125,6 +125,23 @@ import cv2
 import soundfile as sf
 import librosa
 from scipy.signal import iirnotch, lfilter
+
+def transcribe_whisper_lyrics(audio_path, model_name="base"):
+    try:
+        import whisper
+        print(f"-> Running Open Whisper ({model_name}) on-device lyric recognition...")
+        model = whisper.load_model(model_name)
+        result = model.transcribe(audio_path, word_timestamps=False)
+        segments = []
+        for seg in result.get("segments", []):
+            text = (seg.get("text") or "").strip()
+            if text:
+                segments.append((float(seg["start"]), float(seg["end"]), text))
+        print(f"-> Transcribed {len(segments)} timed lyric segments via Open Whisper.")
+        return segments
+    except Exception as exc:
+        print(f"-> Open Whisper skipped ({exc}). Install with: pip install openai-whisper")
+        return []
 
 def apply_studio_filters(audio_path, sample_rate=44100):
     print("-> Loading audio file with librosa...")
@@ -149,6 +166,7 @@ def apply_studio_filters(audio_path, sample_rate=44100):
 
 def render_video(audio_path, output_path="visualizer_render.mp4"):
     y, sr = apply_studio_filters(audio_path)
+    timed_lyrics = transcribe_whisper_lyrics(audio_path)
     
     # Analyze beat times and frequency spectrum
     print("-> Analyzing frequency bins and spectrogram...")
@@ -243,6 +261,23 @@ def render_video(audio_path, output_path="visualizer_render.mp4"):
             blur_size = int(${params.glow * 1.5}) | 1 # Odd number
             blurred = cv2.GaussianBlur(frame, (blur_size, blur_size), 0)
             frame = cv2.addWeighted(frame, 0.8, blurred, 0.4, 0)
+
+        # Global High-Frequency Strobe Flash (mirrors highLevel peak strobe)
+        high_level_norm = float(np.mean(bars_scaled[int(num_bars * 0.55):]))
+        if ${params.postFx?.strobeEnabled ? "True" : "False"} and high_level_norm >= ${params.postFx?.strobeThreshold ?? 0.42}:
+            flash_strength = min(0.9, float(${params.postFx?.strobeIntensity ?? 0.65}) * 0.85)
+            white_layer = np.full_like(frame, 255)
+            frame = cv2.addWeighted(frame, 1.0 - flash_strength * 0.5, white_layer, flash_strength, 0)
+
+        # Render Open Whisper Properly Timed Lyrics at current timestamp t
+        for l_start, l_end, l_text in timed_lyrics:
+            if l_start <= t <= l_end:
+                text_size, _ = cv2.getTextSize(l_text, cv2.FONT_HERSHEY_SIMPLEX, 1.1, 2)
+                tx = max(30, (width - text_size[0]) // 2)
+                ty = int(height * 0.88)
+                cv2.rectangle(frame, (tx - 16, ty - text_size[1] - 12), (tx + text_size[0] + 16, ty + 14), (0, 0, 0), -1)
+                cv2.putText(frame, l_text, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (255, 255, 255), 2, cv2.LINE_AA)
+                break
 
         # Draw metadata watermarks or overlays (Optional info display in corner)
         cv2.putText(

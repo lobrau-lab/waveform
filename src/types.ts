@@ -34,6 +34,30 @@ export type LayerBlendMode = "source-over" | "screen" | "lighter" | "overlay" | 
 export type MirrorSymmetryMode = "none" | "horizontal" | "quad";
 export type OverlayPosition = "top-left" | "top-center" | "center" | "bottom-left" | "bottom-center";
 export type OverlayFontStyle = "mono" | "display" | "serif" | "terminal";
+export type LyricDisplayStyle = "karaoke" | "subtitle" | "crt" | "kinetic";
+export type LyricDisplayPosition = "bottom" | "center" | "top";
+export type WhisperModelId =
+  | "onnx-community/whisper-tiny.en"
+  | "onnx-community/whisper-tiny"
+  | "onnx-community/whisper-base.en";
+
+export interface TimedLyricLine {
+  id: string;
+  start: number; // seconds
+  end: number;   // seconds
+  text: string;
+}
+
+export interface LyricsSettings {
+  enabled: boolean;
+  lines: TimedLyricLine[];
+  style: LyricDisplayStyle;
+  position: LyricDisplayPosition;
+  fontSize: number;      // 18 - 64
+  offsetSec: number;     // -2.0 to +2.0 seconds fine sync
+  showNextLine: boolean;
+  modelId: WhisperModelId;
+}
 
 export interface PostFxSettings {
   scanlines: number;          // 0 - 1
@@ -41,6 +65,9 @@ export interface PostFxSettings {
   vignette: number;           // 0 - 1
   glitchShift: number;        // 0 - 1
   beatZoom: number;           // 0 - 1
+  strobeEnabled?: boolean;    // global high-frequency strobe flash
+  strobeIntensity?: number;   // 0 - 1 flash brightness intensity
+  strobeThreshold?: number;   // 0.15 - 0.90 highLevel trigger threshold
   mirrorMode: MirrorSymmetryMode;
   blendMode: LayerBlendMode;
 }
@@ -80,6 +107,7 @@ export interface VisualParams {
   postFx?: PostFxSettings;
   overlayText?: CustomOverlaySettings;
   backdrop?: BackdropSettings;
+  lyrics?: LyricsSettings;
 }
 
 export interface SavedStudioPreset {
